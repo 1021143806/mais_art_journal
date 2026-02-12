@@ -233,7 +233,8 @@ oil_painting = "油画,古典"
 
 ## 贡献和反馈
 
-欢迎提交 Issue 和 Pull Request！
+*制作者水平有限，任何漏洞、疑问或建议,欢迎提交 Issue 和 Pull Request！
+或联系QQ：1021143806,3082618311*
 
 ---
 
