@@ -93,7 +93,7 @@
   - 克隆本仓库
 
    ```shell
-   git clone https://github.com/Rabbit-Jia-Er/mais-art-journal.git mais_art_journal
+   git clone https://github.com/1021143806/mais-art-journal.git
    ```
 
   - 重启 maibot 后你会看到在当前插件文件夹 `MaiBot/plugins/mais_art_journal`中生成了一个配置文件 `config.toml`
@@ -348,4 +348,4 @@ watercolor = "水彩"
 
 - 作者：Ptrel, Rabbit-Jia-Er, saberlights Kiuon
 - 许可证：GPL-v3.0-or-later
-- 项目主页：https://github.com/Rabbit-Jia-Er/mais-art-journal
+- 项目主页：https://github.com/1021143806/mais-art-journal
