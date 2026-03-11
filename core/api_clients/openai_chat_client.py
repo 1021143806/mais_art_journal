@@ -179,11 +179,37 @@ class OpenAIChatClient(BaseApiClient):
         """从 chat/completions 响应中提取图片数据
 
         多策略提取：
-        1. Markdown 图片链接: ![...](url)
-        2. Data URI: data:image/...;base64,...
-        3. Base64 特征检测
-        4. 普通 URL
+        1. images 字段（Gemini 3.1 Flash Image 等模型）
+        2. Markdown 图片链接: ![...](url)
+        3. Data URI: data:image/...;base64,...
+        4. Base64 特征检测
+        5. 普通 URL
         """
+        # 策略0：优先检查 images 字段（Gemini 3.1 Flash Image 等模型）
+        try:
+            choices = response_data.get("choices", [])
+            if choices:
+                message = choices[0].get("message", {})
+                images = message.get("images", [])
+                
+                if images and isinstance(images, list) and len(images) > 0:
+                    # 提取第一个图片
+                    image_data = images[0]
+                    if isinstance(image_data, dict):
+                        # 检查 image_url 格式
+                        if "image_url" in image_data and isinstance(image_data["image_url"], dict):
+                            url = image_data["image_url"].get("url", "")
+                            if url:
+                                logger.info(f"{self.log_prefix} (OpenAI-Chat) 从 images 字段提取到图片URL: {url[:70]}...")
+                                return True, url
+                        # 检查直接包含 base64 数据
+                        elif "data" in image_data:
+                            b64_data = image_data["data"]
+                            logger.info(f"{self.log_prefix} (OpenAI-Chat) 从 images 字段提取到 Base64 数据，长度: {len(b64_data)}")
+                            return True, b64_data
+        except (IndexError, KeyError, TypeError, AttributeError) as e:
+            logger.debug(f"{self.log_prefix} (OpenAI-Chat) 解析 images 字段失败: {e}")
+
         # 提取 assistant 回复内容
         content = ""
         try:
@@ -195,7 +221,9 @@ class OpenAIChatClient(BaseApiClient):
             pass
 
         if not content:
-            logger.error(f"{self.log_prefix} (OpenAI-Chat) 响应中无内容")
+            logger.error(f"{self.log_prefix} (OpenAI-Chat) 响应中无 content 字段")
+            # 记录完整的响应结构用于调试
+            logger.debug(f"{self.log_prefix} (OpenAI-Chat) 完整响应结构: {json.dumps(response_data, ensure_ascii=False)[:500]}...")
             return False, "Chat API响应中无内容"
 
         logger.debug(f"{self.log_prefix} (OpenAI-Chat) 提取图片，内容长度: {len(content)}")
@@ -244,7 +272,7 @@ class OpenAIChatClient(BaseApiClient):
             logger.info(f"{self.log_prefix} (OpenAI-Chat) 从内容提取到候选URL: {image_url[:70]}...")
             return True, image_url
 
-        logger.error(f"{self.log_prefix} (OpenAI-Chat) 无法从响应中提取图片。内容预览: {content[:200]}...")
+        logger.error(f"{self.log_prefix} (OpenAI-Chat) 无法从响应中提取图片。响应预览: {json.dumps(response_data, ensure_ascii=False)[:500]}...")
         return False, "无法从 Chat API 响应中提取图片数据"
 
     def _clean_log_content(self, content: str) -> str:

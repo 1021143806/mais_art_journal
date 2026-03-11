@@ -19,3 +19,6 @@ nul
 
 # 不忽略某个特定文件（例外规则）
 #!important.log
+
+#忽略ai生成的test文件
+test_*
