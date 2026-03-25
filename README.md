@@ -52,8 +52,8 @@
 定时生成自拍图片并发布到 QQ 空间说说。
 
 **依赖**:
-- `autonomous_planning` 插件 — 提供日程数据（当前活动）
-- `Maizone` 插件（https://github.com/Rabbit-Jia-Er/Maizone） — 发布到 QQ 空间
+- `autonomous_planning` 插件（ https://github.com/xuqian13/autonomous_planning_plugin ）  — 提供日程数据（当前活动）
+- `Maizone` 插件（ https://github.com/Rabbit-Jia-Er/Maizone ） — 发布到 QQ 空间
 
 **特性**:
 - 可配置间隔（默认 2 小时）

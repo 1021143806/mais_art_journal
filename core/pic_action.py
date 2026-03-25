@@ -11,7 +11,7 @@ from src.common.logger import get_logger
 from .api_clients import get_client_class
 from .utils import (
     ImageProcessor, CacheManager, validate_image_size, get_image_size,
-    runtime_state, SELFIE_HAND_NEGATIVE, ANTI_DUAL_PHONE_PROMPT,
+    runtime_state,
     get_model_config, merge_negative_prompt, inject_llm_original_size,
     resolve_image_data, schedule_auto_recall, optimize_prompt,
 )
@@ -447,6 +447,12 @@ class MaisArtAction(BaseAction):
             (prompt, negative_prompt) 元组：处理后的正面提示词和负面提示词
         """
         import random
+        from .selfie.scene_action_generator import (
+            build_hand_prompt_for_style,
+            get_negative_prompt_for_style,
+            get_scene_prompt_for_style,
+            sanitize_hand_action_for_style,
+        )
 
         # 1. 添加强制主体设置（含手部质量引导）
         forced_subject = "(1girl:1.4), (solo:1.3), (perfect hands:1.2), (correct anatomy:1.1)"
@@ -454,16 +460,8 @@ class MaisArtAction(BaseAction):
         # 2. 从独立的selfie配置中获取Bot的默认形象特征（不再从模型配置中获取）
         bot_appearance = self.get_config("selfie.prompt_prefix", "").strip()
 
-        # 3. 定义自拍风格特定的场景设置
-        if selfie_style == "mirror":
-            # 对镜自拍风格（适用于有镜子的室内场景）
-            selfie_scene = "mirror selfie, holding phone, reflection in mirror, bathroom, bedroom mirror, indoor"
-        elif selfie_style == "photo":
-            # 第三人称照片风格（他人拍摄视角，自然姿态）
-            selfie_scene = "photo, candid shot, natural pose, looking away or at camera, full body or upper body"
-        else:
-            # 标准自拍风格（适用于户外或无镜子场景，前置摄像头视角）
-            selfie_scene = "selfie, front camera view, arm extended, looking at camera"
+        # 3. 自拍风格特定的场景设置
+        selfie_scene = get_scene_prompt_for_style(selfie_style)
 
         # 4. 选择手部动作（优先级：LLM参数 > 日程场景 > LLM按描述生成 > 风格动作池兜底）
         if free_hand_action:
@@ -493,6 +491,9 @@ class MaisArtAction(BaseAction):
                 hand_action = random.choice(self._get_hand_actions_for_style(selfie_style))
                 logger.info(f"{self.log_prefix} 动作池随机{selfie_style}风格: {hand_action}")
 
+        hand_action = sanitize_hand_action_for_style(hand_action, selfie_style)
+        hand_prompt = build_hand_prompt_for_style(hand_action, selfie_style)
+
         # 5. 组装完整提示词
         prompt_parts = [forced_subject]
 
@@ -506,7 +507,8 @@ class MaisArtAction(BaseAction):
             if activity_scene.get("lighting"):
                 prompt_parts.append(activity_scene["lighting"])
 
-        prompt_parts.append(hand_action)
+        if hand_prompt:
+            prompt_parts.append(hand_prompt)
 
         # 日程活动的环境（如果有，补充到自拍场景之前）
         if activity_scene and activity_scene.get("environment"):
@@ -530,18 +532,8 @@ class MaisArtAction(BaseAction):
 
         final_prompt = ", ".join(unique_keywords)
 
-        # 构建自拍负面提示词
-        # 读取配置中的基础负面提示词
         base_negative = self.get_config("selfie.negative_prompt", "").strip()
-
-        # 合并负面提示词：所有风格都加手部质量负面，standard 额外加防双手拿手机
-        negative_parts = []
-        if base_negative:
-            negative_parts.append(base_negative)
-        negative_parts.append(SELFIE_HAND_NEGATIVE)
-        if selfie_style == "standard":
-            negative_parts.append(ANTI_DUAL_PHONE_PROMPT)
-        selfie_negative_prompt = ", ".join(negative_parts)
+        selfie_negative_prompt = get_negative_prompt_for_style(selfie_style, base_negative)
 
         logger.info(f"{self.log_prefix} 自拍模式最终提示词: {final_prompt[:200]}...")
         logger.info(f"{self.log_prefix} 自拍模式负面提示词: {selfie_negative_prompt[:150]}...")
@@ -601,30 +593,24 @@ class MaisArtAction(BaseAction):
 
     # photo: 他人拍摄视角，双手都自由，可以有更自然丰富的全身姿态
     _PHOTO_HAND_ACTIONS = [
-        "hands behind back, standing gracefully",
-        "hands in pockets, casual walk",
+        "standing naturally, relaxed posture",
+        "walking casually, relaxed posture",
         "one hand in hair wind blowing, dynamic",
         "arms at sides, natural standing",
         "holding coffee cup, cafe scene",
-        "hands clasped in front, gentle pose",
+        "one hand lightly holding bag strap, casual pose",
         "holding bag, walking pose",
         "leaning on railing, one hand resting",
-        "sitting with hands on lap, relaxed",
+        "sitting naturally, relaxed posture",
         "hand on hat, windy day",
-        "twirling, arms slightly out, dynamic spin",
-        "arms stretched out, embracing scenery",
         "holding flower, smelling gently",
         "hand shielding eyes from sun, looking afar",
-        "carrying shopping bags, casual walk",
+        "carrying a small bag, casual walk",
         "holding book to chest, scholarly",
         "one hand waving at camera, candid",
-        "both hands holding drink, warm gesture",
-        "hands on knees, sitting pose",
         "leaning against wall, arms relaxed",
-        "crouching down, hands on knees, playful angle",
-        "running toward camera, joyful",
         "holding umbrella, rainy atmosphere",
-        "hand reaching out toward camera, inviting",
+        "looking back over shoulder, candid",
         "sitting on bench, legs crossed, elegant",
     ]
 

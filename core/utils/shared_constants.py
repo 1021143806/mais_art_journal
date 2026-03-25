@@ -23,5 +23,12 @@ ANTI_DUAL_PHONE_PROMPT = (
     "both hands visible"
 )
 
+# 第三人称照片专用：明确主体不是在自拍，也不应手持拍摄设备
+PHOTO_NO_PHONE_PROMPT = (
+    "phone, smartphone, cellphone, mobile phone, "
+    "visible phone, phone in hand, holding phone, "
+    "camera in hand, selfie, selfie stick, taking selfie"
+)
+
 # 向后兼容别名
 ANTI_DUAL_HANDS_PROMPT = f"{SELFIE_HAND_NEGATIVE}, {ANTI_DUAL_PHONE_PROMPT}"

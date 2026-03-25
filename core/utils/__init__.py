@@ -1,6 +1,12 @@
 """工具函数统一入口"""
 
-from .shared_constants import BASE64_IMAGE_PREFIXES, ANTI_DUAL_HANDS_PROMPT, SELFIE_HAND_NEGATIVE, ANTI_DUAL_PHONE_PROMPT
+from .shared_constants import (
+    BASE64_IMAGE_PREFIXES,
+    ANTI_DUAL_HANDS_PROMPT,
+    SELFIE_HAND_NEGATIVE,
+    ANTI_DUAL_PHONE_PROMPT,
+    PHOTO_NO_PHONE_PROMPT,
+)
 from .model_utils import get_model_config, merge_negative_prompt, inject_llm_original_size
 from .image_utils import ImageProcessor
 from .image_send_utils import resolve_image_data
