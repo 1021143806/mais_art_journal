@@ -545,7 +545,7 @@ class MaisArtJournalPlugin(BasePlugin):
             "seed": ConfigField(
                 type=int,
                 default=-1,
-                description="随机种子，固定值可确保结果可复现。-1 表示每次随机",
+                description="随机种子，固定值可确保结果可复现。-1 表示每次随机，同时对于不支持此参数的模型，设为-1时请求将不包含此参数",
                 label="随机种子",
                 min=-1,
                 max=2147483647,
@@ -555,9 +555,9 @@ class MaisArtJournalPlugin(BasePlugin):
             "guidance_scale": ConfigField(
                 type=float,
                 default=2.5,
-                description="引导强度（CFG）。值越高越严格遵循提示词。豆包 seededit 推荐 5.5，硅基流动/魔搭推荐 2.5-7.5",
+                description="引导强度（CFG）。值越高越严格遵循提示词。豆包 seededit 推荐 5.5，硅基流动/魔搭推荐 2.5-7.5。对于不支持此参数的模型（如Gemini），可设为-1，请求时将不包含此参数",
                 label="引导强度",
-                min=0.0,
+                min=-1.0,
                 max=20.0,
                 step=0.5,
                 group="params",
@@ -566,9 +566,9 @@ class MaisArtJournalPlugin(BasePlugin):
             "num_inference_steps": ConfigField(
                 type=int,
                 default=20,
-                description="推理步数，影响质量和速度。推荐20-50",
+                description="推理步数，影响质量和速度。推荐20-50。对于不支持此参数的模型（如Gemini），可设为-1，请求时将不包含此参数",
                 label="推理步数",
-                min=1,
+                min=-1,
                 max=150,
                 group="params",
                 order=10

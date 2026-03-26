@@ -66,8 +66,12 @@ class OpenAIClient(BaseApiClient):
         if "ark.cn-beijing.volces.com" in base_url:  # 豆包火山方舟
             payload_dict["watermark"] = watermark
         else:  # 默认魔搭等其他
-            payload_dict["guidance_scale"] = guidance_scale
-            payload_dict["num_inference_steps"] = num_inference_steps
+            # 兼容性优化：当guidance_scale或num_inference_steps为None或-1时不发送对应参数
+            # 某些模型（如Gemini 3.1 Flash Image）不支持这些参数
+            if guidance_scale is not None and guidance_scale != -1:
+                payload_dict["guidance_scale"] = guidance_scale
+            if num_inference_steps is not None and num_inference_steps != -1:
+                payload_dict["num_inference_steps"] = num_inference_steps
 
         # 平台兼容性处理
         is_siliconflow = "siliconflow" in base_url.lower() or "api.siliconflow.cn" in base_url.lower()
