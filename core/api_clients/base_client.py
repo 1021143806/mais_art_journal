@@ -1,10 +1,12 @@
 """API客户端基类"""
 import asyncio
 import base64
+import logging
 from typing import Dict, Any, Tuple, Optional
-from src.common.logger import get_logger
 
-logger = get_logger("mais_art.api")
+from .client_context import ClientContext
+
+logger = logging.getLogger("plugin.mais_art_journal.api")
 
 
 class NonRetryableError(Exception):
@@ -13,31 +15,49 @@ class NonRetryableError(Exception):
 
 
 class BaseApiClient:
-    """API客户端基类"""
+    """API客户端基类
+
+    构造时接收 ClientContext（新接口）或任何具备 `get_config + log_prefix` 的
+    duck-typed 对象（兼容 RequestContext / 旧 action_instance）。
+    """
 
     # 子类需要设置的格式名称
     format_name: str = "base"
 
-    def __init__(self, action_instance):
-        self.action = action_instance
-        self.log_prefix = action_instance.log_prefix
+    def __init__(self, client_ctx):
+        # 兼容三类调用方：ClientContext / RequestContext / 旧 action_instance
+        if not hasattr(client_ctx, "get_config") or not hasattr(client_ctx, "log_prefix"):
+            raise TypeError(
+                "BaseApiClient 需要一个具备 get_config 与 log_prefix 的上下文对象"
+            )
+        self.ctx = client_ctx
+        # 保留 self.action 别名，便于 9 个旧 client 渐进改造
+        self.action = client_ctx
+        self.log_prefix = client_ctx.log_prefix
 
     def _get_proxy_config(self) -> Optional[Dict[str, Any]]:
-        """获取代理配置"""
+        """获取代理配置（ClientContext 走 get_proxy_config，duck-typed 回退读 get_config）"""
         try:
-            proxy_enabled = self.action.get_config("proxy.enabled", False)
+            # 优先走 ClientContext 提供的封装
+            if isinstance(self.ctx, ClientContext):
+                cfg = self.ctx.get_proxy_config()
+                if cfg:
+                    logger.info(f"{self.log_prefix} 代理已启用: {cfg.get('http')}")
+                return cfg
+
+            # 回退：从 get_config 平铺读取
+            proxy_enabled = self.ctx.get_config("proxy.enabled", False)
             if not proxy_enabled:
                 return None
 
-            proxy_url = self.action.get_config("proxy.url", "http://127.0.0.1:7890")
-            timeout = self.action.get_config("proxy.timeout", 60)
+            proxy_url = self.ctx.get_config("proxy.url", "http://127.0.0.1:7890")
+            timeout = self.ctx.get_config("proxy.timeout", 60)
 
             proxy_config = {
                 "http": proxy_url,
                 "https": proxy_url,
-                "timeout": timeout
+                "timeout": timeout,
             }
-
             logger.info(f"{self.log_prefix} 代理已启用: {proxy_url}")
             return proxy_config
         except Exception as e:
@@ -123,18 +143,19 @@ class BaseApiClient:
             size: 图片尺寸
             strength: 图生图强度
             input_image_base64: 输入图片的base64编码
-            max_retries: 最大重试次数
+            max_retries: 最大重试次数（不包括首次尝试）
 
         Returns:
             (成功标志, 结果数据或错误信息)
         """
-        for attempt in range(max_retries + 1):
+        total_attempts = max_retries + 1  # 首次尝试 + 重试次数
+        for attempt in range(total_attempts):
             try:
                 if attempt > 0:
                     logger.info(f"{self.log_prefix} API调用重试第 {attempt} 次")
                     await asyncio.sleep(1.0 * attempt)  # 渐进式等待
 
-                logger.debug(f"{self.log_prefix} 开始API调用（尝试 {attempt + 1}/{max_retries + 1}）")
+                logger.debug(f"{self.log_prefix} 开始API调用（尝试 {attempt + 1}/{total_attempts}）")
 
                 # 调用具体实现
                 success, result = await asyncio.to_thread(
@@ -151,11 +172,15 @@ class BaseApiClient:
                         logger.info(f"{self.log_prefix} API调用重试第 {attempt} 次成功")
                     return True, result
 
+                # 失败处理
                 if attempt < max_retries:
                     logger.warning(f"{self.log_prefix} 第 {attempt + 1} 次API调用失败: {result}，将重试（剩余 {max_retries - attempt} 次）")
                     continue
                 else:
-                    logger.error(f"{self.log_prefix} 重试 {max_retries} 次后API调用仍失败: {result}")
+                    if max_retries > 0:
+                        logger.error(f"{self.log_prefix} 重试 {max_retries} 次后API调用仍失败: {result}")
+                    else:
+                        logger.error(f"{self.log_prefix} API调用失败: {result}")
                     return False, result
 
             except NonRetryableError as e:

@@ -1,9 +1,8 @@
+import logging
 from typing import Optional, Dict, Any
 from threading import Lock
 
-from src.common.logger import get_logger
-
-logger = get_logger("mais_art.cache")
+logger = logging.getLogger("plugin.mais_art_journal.cache")
 
 class CacheManager:
     """缓存管理器"""
@@ -19,11 +18,11 @@ class CacheManager:
 
     def _get_max_size(self) -> int:
         """获取最大缓存数量配置"""
-        return self.action.get_config("cache.max_size", 10)
+        return self.action.get_config("basic.cache_max_size", 10)
 
     def get_cached_result(self, description: str, model: str, size: str, strength: float = None, is_img2img: bool = False) -> Optional[str]:
         """获取缓存的结果"""
-        if not self.action.get_config("cache.enabled", True):
+        if not self.action.get_config("basic.cache_enabled", True):
             return None
 
         try:
@@ -46,7 +45,7 @@ class CacheManager:
 
     def cache_result(self, description: str, model: str, size: str, strength: float = None, is_img2img: bool = False, result: str = None):
         """缓存结果"""
-        if not self.action.get_config("cache.enabled", True) or not result:
+        if not self.action.get_config("basic.cache_enabled", True) or not result:
             return
 
         try:
@@ -114,7 +113,7 @@ class CacheManager:
                     "txt2img_cache_max": max_size,
                     "img2img_cache_size": len(self._img2img_cache),
                     "img2img_cache_max": max_size,
-                    "cache_enabled": self.action.get_config("cache.enabled", True)
+                    "cache_enabled": self.action.get_config("basic.cache_enabled", True)
                 }
         except Exception as e:
             logger.warning(f"{self.log_prefix} 获取缓存统计失败: {e}")

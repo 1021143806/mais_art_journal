@@ -2,10 +2,13 @@
 
 提供统一的图片尺寸解析、验证和转换功能，供各API客户端复用
 """
-from typing import Tuple, Optional, Dict
-from src.common.logger import get_logger
+import logging
+from typing import TYPE_CHECKING, Tuple, Optional, Dict
 
-logger = get_logger("mais_art.size")
+if TYPE_CHECKING:
+    from maibot_sdk.context import PluginContext
+
+logger = logging.getLogger("plugin.mais_art_journal.size")
 
 # LLM 尺寸选择系统提示词
 SIZE_SELECTOR_SYSTEM_PROMPT = """You are an image size selector. Based on the image description, choose the most appropriate size.
@@ -35,12 +38,19 @@ Output: 1024x1024
 Now select size for:"""
 
 
-async def select_size_with_llm(description: str, log_prefix: str = "") -> Optional[str]:
+async def select_size_with_llm(
+    ctx: "PluginContext",
+    description: str,
+    log_prefix: str = "",
+    llm_task: str = "utils",
+) -> Optional[str]:
     """使用 LLM 选择合适的图片尺寸
 
     Args:
+        ctx: PluginContext（SDK 上下文）
         description: 图片描述
         log_prefix: 日志前缀
+        llm_task: 调用 ctx.llm.generate 时使用的任务名
 
     Returns:
         选择的尺寸字符串，如 "1024x1024"，失败返回 None
@@ -48,48 +58,36 @@ async def select_size_with_llm(description: str, log_prefix: str = "") -> Option
     if not description or not description.strip():
         return None
 
+    full_prompt = f"{SIZE_SELECTOR_SYSTEM_PROMPT}\nInput: {description.strip()}\nOutput:"
+
+    logger.info(f"{log_prefix} 使用 LLM 选择尺寸...")
+
     try:
-        from src.plugin_system.apis import llm_api
-
-        # 获取可用模型
-        models = llm_api.get_available_models()
-        if not models:
-            logger.warning(f"{log_prefix} 没有可用的 LLM 模型，无法选择尺寸")
-            return None
-
-        # 使用 replyer 模型（首要回复模型）
-        if "replyer" not in models:
-            logger.warning(f"{log_prefix} 没有找到 replyer 模型，无法选择尺寸")
-            return None
-        model_config = models["replyer"]
-
-        # 构建 prompt
-        full_prompt = f"{SIZE_SELECTOR_SYSTEM_PROMPT}\nInput: {description.strip()}\nOutput:"
-
-        logger.info(f"{log_prefix} 使用 LLM 选择尺寸...")
-
-        # 调用 LLM（不传递 temperature 和 max_tokens，使用模型默认值）
-        success, response, reasoning, model_name = await llm_api.generate_with_model(
+        result = await ctx.llm.generate(
             prompt=full_prompt,
-            model_config=model_config,
-            request_type="plugin.size_select",
+            model=llm_task,
+            temperature=0.3,
+            max_tokens=64,
         )
 
-        if success and response:
-            # 清理响应
-            size = response.strip().split()[0]  # 只取第一个词
-            size = size.strip('"\'')  # 移除引号
+        response = ""
+        model_name = ""
+        success = False
+        if isinstance(result, dict):
+            success = bool(result.get("success", True))
+            response = str(result.get("response") or result.get("content") or "")
+            model_name = str(result.get("model") or result.get("model_name") or "")
 
-            # 验证格式
-            if validate_image_size(size):
-                logger.info(f"{log_prefix} LLM 选择尺寸: {size} (模型: {model_name})")
-                return size
-            else:
-                logger.warning(f"{log_prefix} LLM 返回无效尺寸: {size}")
-                return None
-        else:
+        if not (success and response):
             logger.warning(f"{log_prefix} LLM 尺寸选择失败")
             return None
+
+        size = response.strip().split()[0].strip('"\'')
+        if validate_image_size(size):
+            logger.info(f"{log_prefix} LLM 选择尺寸: {size} (模型: {model_name})")
+            return size
+        logger.warning(f"{log_prefix} LLM 返回无效尺寸: {size}")
+        return None
 
     except Exception as e:
         logger.error(f"{log_prefix} LLM 尺寸选择异常: {e}")
@@ -132,12 +130,14 @@ async def get_image_size_async(
     model_config: dict,
     description: str = "",
     llm_size: str = None,
-    log_prefix: str = ""
+    log_prefix: str = "",
+    ctx: "PluginContext | None" = None,
+    llm_task: str = "utils",
 ) -> Tuple[str, Optional[str]]:
     """异步版本的图片尺寸获取逻辑
 
     当 fixed_size_enabled=False 且没有预设 llm_size 时，
-    会调用 LLM 选择合适的尺寸。
+    会调用 LLM 选择合适的尺寸（需要传入 ctx）。
 
     特殊情况：当 fixed_size_enabled=True 且 default_size 以 "-" 开头时（如 "-2K"），
     仍会调用 LLM 选择宽高比，分辨率使用配置值。
@@ -147,6 +147,8 @@ async def get_image_size_async(
         description: 图片描述（用于 LLM 选择尺寸）
         llm_size: 预设的 LLM 尺寸（Action 组件已有时使用）
         log_prefix: 日志前缀
+        ctx: PluginContext，用于调用 LLM；为 None 时跳过 LLM 选择
+        llm_task: 调用 ctx.llm.generate 时使用的任务名
 
     Returns:
         (image_size, llm_original_size) 元组
@@ -156,11 +158,10 @@ async def get_image_size_async(
 
     if fixed_size_enabled:
         # 特殊处理："-2K" 格式需要 LLM 选择宽高比
-        if default_size.startswith("-") and description:
+        if default_size.startswith("-") and description and ctx is not None:
             if log_prefix:
                 logger.info(f"{log_prefix} 使用固定分辨率配置，LLM 选择宽高比")
-            selected_size = await select_size_with_llm(description, log_prefix)
-            # 返回配置的尺寸，但保留 LLM 选择的尺寸用于宽高比转换
+            selected_size = await select_size_with_llm(ctx, description, log_prefix, llm_task=llm_task)
             return default_size, selected_size
 
         # 使用配置文件的固定尺寸
@@ -174,8 +175,8 @@ async def get_image_size_async(
         return llm_size, llm_size
 
     # 没有预设尺寸，调用 LLM 选择（Command 组件）
-    if description:
-        selected_size = await select_size_with_llm(description, log_prefix)
+    if description and ctx is not None:
+        selected_size = await select_size_with_llm(ctx, description, log_prefix, llm_task=llm_task)
         if selected_size:
             return selected_size, selected_size
 
@@ -239,10 +240,11 @@ def validate_image_size(size: str) -> bool:
     """验证图片尺寸格式是否正确
 
     支持的格式：
-    1. 像素格式：1024x1024、512x512（64-4096范围）
+    1. 像素格式：1024x1024、512x512、1024*1024（64-4096范围）
     2. 宽高比格式：16:9、1:1、4:3
     3. 宽高比+分辨率：16:9-2K、1:1-4K
     4. 仅分辨率：-2K、-4K
+    5. 纯分辨率档位：1K / 2K / 4K（DashScope 万相 / Z-Image / 可灵 / Gemini 等使用）
 
     Args:
         size: 尺寸字符串
@@ -256,6 +258,10 @@ def validate_image_size(size: str) -> bool:
     size = size.strip()
 
     try:
+        # 格式 5：纯分辨率档位（1K / 2K / 4K）—— DashScope 等使用
+        if size.upper() in ("1K", "2K", "4K"):
+            return True
+
         # 格式1：仅分辨率（-2K、-4K）
         if size.startswith('-'):
             resolution = size[1:].strip().upper()
@@ -292,7 +298,7 @@ def validate_image_size(size: str) -> bool:
             except ValueError:
                 return False
 
-        # 格式4：像素格式（1024x1024、512x512）
+        # 格式4：像素格式（1024x1024、512x512、1024*1024）
         if 'x' in size.lower() or '*' in size:
             width, height = parse_pixel_size(size, 0, 0)
             return 64 <= width <= 4096 and 64 <= height <= 4096
