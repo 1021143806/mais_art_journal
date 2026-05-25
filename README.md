@@ -84,9 +84,9 @@
 | `doubao` | 豆包（火山引擎） | 使用 Ark SDK，支持 seed/guidance_scale/watermark |
 | `gemini` | Google Gemini | 原生 `generateContent` 接口，支持 Gemini 2.5/3 系列 |
 | `modelscope` | 魔搭社区 | 异步任务模式，自动轮询结果 |
+| `dashscope` | 阿里百炼 DashScope | 支持通义千问/万相/Z-Image/可灵等模型 |
 | `shatangyun` | 砂糖云 (NovelAI) | GET 请求，URL 参数传递 |
 | `mengyuai` | 梦羽 AI | 不支持图生图（须设 `support_img2img = false`） |
-| `zai` | Zai (Gemini 转发) | OpenAI 兼容的 chat/completions，支持宽高比/分辨率 |
 | `comfyui` | 本地 ComfyUI | 加载工作流 JSON，替换占位符，轮询结果（支持代理配置） |
 
 ---
@@ -104,6 +104,13 @@
 
    ```shell
    git clone https://github.com/1021143806/mais-art-journal.git
+   ```
+
+  - 如果使用豆包（火山方舟）API，需要安装豆包 SDK
+
+   ```shell
+   cd MaiBot
+   uv pip install "volcengine-python-sdk[ark]"
    ```
 
   - 重启 maibot 后你会看到在当前插件文件夹 `MaiBot/plugins/mais_art_journal`中生成了一个配置文件 `config.toml`
@@ -322,7 +329,12 @@ watercolor = "水彩"
 - 需 Python 3.12+
 - 依赖 MaiBot 项目插件系统，目前改为一直支持最新版
 - MaiBot 项目地址：https://github.com/Mai-with-u/MaiBot
-- 火山方舟 api 需要通过 pip install 'volcengine-python-sdk[ark]' 安装方舟SDK
+- 如果使用豆包（火山方舟）API，需要安装豆包 SDK
+
+   ```shell
+   cd MaiBot
+   uv pip install "volcengine-python-sdk[ark]"
+   ```
 
 ## ⚠️ 注意事项
 
