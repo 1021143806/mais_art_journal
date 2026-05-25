@@ -2,6 +2,11 @@
 
 通过 chat/completions 接口生成图片，适用于支持图片生成的 chat 模型。
 多策略图片提取：Markdown图片链接、Data URI、Base64特征、URL。
+
+尺寸字段自动适配：
+- 像素格式（如 1024x1024）→ payload["size"] = size （标准 OpenAI）
+- Gemini 风格（含 ':' 如 16:9、或以 '-' 开头如 -2K、或 16:9-2K）→
+  payload["image_aspect_ratio"] + payload["image_resolution"]
 """
 import json
 import re
@@ -10,6 +15,47 @@ import traceback
 from typing import Dict, Any, Tuple
 
 from .base_client import BaseApiClient, logger
+from ..utils import pixel_size_to_gemini_aspect
+
+
+def _apply_size_to_payload(
+    payload: Dict[str, Any],
+    size: str,
+    model_config: Dict[str, Any],
+    log_prefix: str = "",
+) -> None:
+    """按尺寸格式自动选择 OpenAI 风格 size 或 Gemini
+
+    判断依据：
+    - 像素格式（如 1024x1024）→ payload["size"]
+    - 含 ':' 或以 '-' 开头 → 走 Gemini 风格
+    """
+    if not size:
+        return
+
+    s = size.strip()
+    if ":" not in s and not s.startswith("-"):
+        payload["size"] = s
+        return
+
+    # Gemini
+    llm_orig = (model_config.get("_llm_original_size") or "").strip()
+
+    if s.startswith("-"):
+        # 仅分辨率，如 "-2K"
+        payload["image_resolution"] = s[1:].strip().upper()
+        if llm_orig:
+            payload["image_aspect_ratio"] = pixel_size_to_gemini_aspect(llm_orig, log_prefix) or "1:1"
+        else:
+            payload["image_aspect_ratio"] = "1:1"
+    elif "-" in s and ":" in s:
+        # 宽高比+分辨率，如 "16:9-2K"
+        parts = s.split("-", 1)
+        payload["image_aspect_ratio"] = parts[0].strip()
+        payload["image_resolution"] = parts[1].strip().upper()
+    else:
+        # 仅宽高比，如 "16:9"
+        payload["image_aspect_ratio"] = s
 
 
 class OpenAIChatClient(BaseApiClient):
@@ -85,9 +131,10 @@ class OpenAIChatClient(BaseApiClient):
         if seed is not None and seed != -1:
             payload_dict["seed"] = seed
 
-        # 某些模型支持 size 参数
+        # 尺寸字段：按格式自动选择 openai 风格 size 还是 Gemini 风格 image_aspect_ratio + image_resolution
+        # （Gemini 风格用于通过 chat/completions 接口转发的 Gemini 代理服务）
         if size:
-            payload_dict["size"] = size
+            _apply_size_to_payload(payload_dict, size, model_config, self.log_prefix)
 
         data = json.dumps(payload_dict, ensure_ascii=False).encode("utf-8")
         headers = {
@@ -99,7 +146,7 @@ class OpenAIChatClient(BaseApiClient):
         # 详细调试信息
         verbose_debug = False
         try:
-            verbose_debug = self.action.get_config("components.enable_verbose_debug", False)
+            verbose_debug = self.ctx.get_config("basic.enable_verbose_debug", False)
         except Exception:
             pass
 

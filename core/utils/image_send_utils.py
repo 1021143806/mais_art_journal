@@ -4,13 +4,12 @@
 """
 
 import asyncio
+import logging
 from typing import Tuple, Callable
-
-from src.common.logger import get_logger
 
 from .shared_constants import BASE64_IMAGE_PREFIXES
 
-logger = get_logger("mais_art.image_send")
+logger = logging.getLogger("plugin.mais_art_journal.image_send")
 
 
 async def resolve_image_data(

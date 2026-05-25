@@ -1,866 +1,605 @@
-from typing import List, Tuple, Type, Dict, Any
-import asyncio
+"""麦麦绘卷 SDK 2.x 插件入口（Pipeline 架构）
+
+组件：
+- @Tool draw_picture: 智能文/图生图，由 LLM/规划器按需调用；委托给 action pipeline
+- @Command dr: 单一入口，通过 CommandDispatcher 分发到 @subcommand 注册的 handlers
+- @API generate_image: 对外暴露的生图接口，供其他插件 ctx.api.call 调用
+- @API list_image_models: 对外暴露的模型清单接口
+
+生命周期：
+- on_load: 初始化 dispatcher + 加载 action pipeline + 启动自动自拍
+- on_unload: 停止自动自拍
+- on_config_update: 版本变更时备份配置 + 同步自动自拍开关
+"""
+from __future__ import annotations
+
+import logging
 import os
+import re
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
-from src.plugin_system.base.base_plugin import BasePlugin
-from src.plugin_system.base.component_types import ComponentInfo
-from src.plugin_system import register_plugin
-from src.plugin_system.base.config_types import (
-    ConfigField,
-    ConfigSection,
-    ConfigLayout,
-    ConfigTab,
-)
+from maibot_sdk import API, Command, MaiBotPlugin, Tool
 
-from .core.pic_action import MaisArtAction
-from .core.pic_command import PicGenerationCommand, PicConfigCommand, PicStyleCommand
-from .core.config_manager import EnhancedConfigManager
+from .core.config.models import MaisArtConfig
+
+if TYPE_CHECKING:
+    from .core.commands.dispatcher import CommandDispatcher
+    from .core.pipeline import Pipeline
+    from .core.selfie.auto_selfie_task import AutoSelfieTask
+
+logger = logging.getLogger("plugin.mais_art_journal")
 
 
-@register_plugin
-class MaisArtJournalPlugin(BasePlugin):
-    """麦麦绘卷（Claude MAInet）- 智能多模型图片生成插件，支持文生图和图生图"""
+class MaisArtPlugin(MaiBotPlugin):
+    """麦麦绘卷（Claude MAInet）智能多模型图片生成插件"""
 
-    # 插件基本信息
-    plugin_name = "mais_art_journal"
-    plugin_version = "3.4.0"
-    plugin_author = "Ptrel，Rabbit"
-    enable_plugin = True
-    dependencies: List[str] = []
-    python_dependencies: List[str] = []
-    config_file_name = "config.toml"
+    config_model = MaisArtConfig
+    config_reload_subscriptions = ()  # 不订阅 bot/model 全局广播
 
-    # 配置节元数据
-    config_section_descriptions = {
-        # ---- basic 标签页 ----
-        "plugin": ConfigSection(
-            title="插件启用配置",
-            icon="info",
-            order=1
-        ),
-        "generation": ConfigSection(
-            title="图片生成默认配置",
-            icon="image",
-            order=2
-        ),
-        "components": ConfigSection(
-            title="组件启用配置",
-            icon="puzzle-piece",
-            order=3
-        ),
-        # ---- network 标签页 ----
-        "proxy": ConfigSection(
-            title="代理设置",
-            icon="globe",
-            order=4
-        ),
-        "cache": ConfigSection(
-            title="结果缓存配置",
-            icon="database",
-            order=5
-        ),
-        # ---- features 标签页 ----
-        "selfie": ConfigSection(
-            title="自拍模式配置",
-            icon="camera",
-            order=6
-        ),
-        "auto_selfie": ConfigSection(
-            title="自动自拍配置",
-            description="定时自动生成自拍并发布到QQ空间（需安装 Maizone 插件和 autonomous_planning 插件）",
-            icon="camera",
-            order=7
-        ),
-        "auto_recall": ConfigSection(
-            title="自动撤回配置",
-            icon="trash",
-            order=8
-        ),
-        "prompt_optimizer": ConfigSection(
-            title="提示词优化器",
-            description="使用 MaiBot 主 LLM 将用户描述优化为专业绘画提示词",
-            icon="wand-2",
-            order=9
-        ),
-        # ---- styles 标签页 ----
-        "styles": ConfigSection(
-            title="风格定义",
-            description="预设风格的提示词。添加更多风格请直接编辑 config.toml，格式：风格英文名 = \"提示词\"",
-            icon="palette",
-            order=10
-        ),
-        "style_aliases": ConfigSection(
-            title="风格别名",
-            description="风格的中文别名映射。添加更多别名请直接编辑 config.toml",
-            icon="tag",
-            order=11
-        ),
-        # ---- models 标签页 ----
-        "models": ConfigSection(
-            title="多模型配置",
-            description="添加更多模型请直接编辑 config.toml，复制 [models.model1] 整节并改名为 model2、model3 等",
-            icon="cpu",
-            order=12
-        ),
-        "models.model1": ConfigSection(
-            title="模型1配置",
-            icon="box",
-            order=13
-        ),
-    }
-
-    # 自定义布局：标签页
-    config_layout = ConfigLayout(
-        type="tabs",
-        tabs=[
-            ConfigTab(
-                id="basic",
-                title="基础设置",
-                sections=["plugin", "generation", "components"],
-                icon="settings"
-            ),
-            ConfigTab(
-                id="network",
-                title="网络配置",
-                sections=["proxy", "cache"],
-                icon="wifi"
-            ),
-            ConfigTab(
-                id="features",
-                title="功能配置",
-                sections=["selfie", "auto_selfie", "auto_recall", "prompt_optimizer"],
-                icon="zap"
-            ),
-            ConfigTab(
-                id="styles",
-                title="风格管理",
-                sections=["styles", "style_aliases"],
-                icon="palette"
-            ),
-            ConfigTab(
-                id="models",
-                title="模型管理",
-                sections=["models", "models.model1"],
-                icon="cpu"
-            ),
-        ]
+    # 智能生图 Tool 描述（融合了原 Action 的 require / activation_keywords / prompt 语境）
+    _DRAW_TOOL_DESCRIPTION = (
+        "智能图片生成：根据描述生成图片（文生图）或基于现有图片进行修改（图生图）。"
+        "自动检测是否有输入图片来决定文生图或图生图模式。"
+        "支持多种 API 格式：OpenAI、豆包、Gemini、硅基流动、魔搭社区、砂糖云(NovelAI)、ComfyUI、梦羽 AI、"
+        "阿里百炼 DashScope（通义千问 / 万相 / Z-Image / 可灵）、智谱 GLM 等。\n\n"
+        "## 适合调用本工具的场景\n"
+        "1. 用户明确要求画图、生成图片、创作图像（关键词：画/绘制/生成图片/画图/draw/paint/创作）\n"
+        "2. 用户发送了图片并要求基于该图片修改/重画/换风格（图生图：图生图/修改图片/基于这张图/换成/改成/换风格）\n"
+        "3. 用户要求自拍、拍照、对镜自拍、第三人称照片（selfie_mode=true）\n"
+        "4. 群聊中必须是用户 @你或叫你名字才使用，不要响应发给其他机器人的命令（/nai、/sd、/mj 等）\n"
+        "5. 用户可以通过'用模型1画'、'model2 生成'等方式指定特定模型\n"
+        "6. 自拍风格选择：'自拍/拍个自拍' → standard；'照镜子/对镜拍' → mirror；'画一张你在 XX 的照片' 等第三人称 → photo\n\n"
+        "## 不要调用本工具的场景\n"
+        "1. 用户只是描述场景或事物，并没有要求你画图\n"
+        "2. 纯文字聊天和问答\n"
+        "3. 只是提到'图片'、'画'等词但不是在要求你生成\n"
+        "4. 谈论已存在的图片或照片（仅讨论不修改）\n"
+        "5. 技术讨论中提到绘图概念但无生成需求\n"
+        "6. 用户明确表示不需要图片时\n"
+        "7. 刚刚成功生成过图片，避免频繁请求\n"
+        "8. 引用别人的画图请求但自己没说要画——本工具是给当前用户的，不要替别人执行"
     )
 
-    # 配置Schema
-    config_schema = {
-        "plugin": {
-            "name": ConfigField(
-                type=str,
-                default="麦麦绘卷",
-                description="麦麦绘卷（Claude MAInet）— 智能多模型图片生成插件，支持文生图/图生图自动识别",
-                label="插件名称",
-                required=True,
-                disabled=True,
-                order=1
-            ),
-            "config_version": ConfigField(
-                type=str,
-                default="3.4.0",
-                description="插件配置版本号",
-                label="配置版本",
-                disabled=True,
-                order=2
-            ),
-            "enabled": ConfigField(
-                type=bool,
-                default=False,
-                description="是否启用插件，开启后可使用画图和风格转换功能",
-                label="启用插件",
-                order=3
-            )
+    _DRAW_TOOL_PARAMETERS = {
+        "description": {
+            "type": "string",
+            "description": "图片描述文本（中文或英文均可），例如用户说'画一只小猫'则填写'一只小猫'。必填。",
+            "required": True,
         },
-        "generation": {
-            "default_model": ConfigField(
-                type=str,
-                default="model1",
-                description="默认使用的模型ID，用于智能图片生成。支持文生图和图生图自动识别",
-                label="默认模型",
-                hint="对应模型管理中的模型ID（如model1、model2）",
-                example="model1",
-                placeholder="model1",
-                order=1
-            ),
+        "model_id": {
+            "type": "string",
+            "description": "可选：要使用的模型 ID（如 model1、model2 等）。不填则使用 default_model 配置。",
         },
-        "cache": {
-            "enabled": ConfigField(
-                type=bool,
-                default=True,
-                description="是否启用结果缓存，相同参数的请求会复用之前的结果",
-                label="启用缓存",
-                order=1
-            ),
-            "max_size": ConfigField(
-                type=int,
-                default=10,
-                description="最大缓存数量，超出后删除最旧的缓存",
-                label="最大缓存数",
-                min=1,
-                max=100,
-                depends_on="cache.enabled",
-                depends_value=True,
-                order=2
-            ),
+        "strength": {
+            "type": "number",
+            "description": "可选：图生图强度，0.1-1.0，值越高变化越大。仅图生图时使用，默认 0.7。",
         },
-        "components": {
-            "enable_unified_generation": ConfigField(
-                type=bool,
-                default=True,
-                description="是否启用智能图片生成Action，支持文生图和图生图自动识别",
-                label="智能生图",
-                order=1
-            ),
-            "enable_pic_command": ConfigField(
-                type=bool,
-                default=True,
-                description="是否启用 /dr 图片生成命令，支持风格化图生图和自然语言文/图生图",
-                label="图片生成命令",
-                order=2
-            ),
-            "enable_pic_config": ConfigField(
-                type=bool,
-                default=True,
-                description="是否启用模型配置管理命令，支持/dr list、/dr set等",
-                label="配置管理",
-                order=3
-            ),
-            "enable_pic_style": ConfigField(
-                type=bool,
-                default=True,
-                description="是否启用风格管理命令，支持/dr styles、/dr style等",
-                label="风格管理",
-                order=4
-            ),
-            "pic_command_model": ConfigField(
-                type=str,
-                default="model1",
-                description="Command组件使用的模型ID，可通过/dr set命令动态切换",
-                label="Command模型",
-                placeholder="model1",
-                order=5
-            ),
-            "enable_debug_info": ConfigField(
-                type=bool,
-                default=False,
-                description="是否启用调试信息显示，关闭后仅显示图片结果和错误信息",
-                label="调试信息",
-                order=6
-            ),
-            "enable_verbose_debug": ConfigField(
-                type=bool,
-                default=False,
-                description="是否启用详细调试信息，启用后会发送完整的调试信息以及打印完整的 POST 报文",
-                label="详细调试",
-                order=7
-            ),
-            "admin_users": ConfigField(
-                type=list,
-                default=[],
-                description="有权限使用配置管理命令的管理员用户列表，请填写字符串形式的用户ID",
-                label="管理员列表",
-                hint="字符串形式的用户ID，如 [\"12345\", \"67890\"]",
-                item_type="string",
-                placeholder="[\"用户ID1\", \"用户ID2\"]",
-                order=8
-            ),
-            "max_retries": ConfigField(
-                type=int,
-                default=2,
-                description="API调用失败时的重试次数，建议2-5次。设置为0表示不重试",
-                label="重试次数",
-                min=0,
-                max=10,
-                order=9
-            )
+        "size": {
+            "type": "string",
+            "description": "可选：图片尺寸，如 512x512、1024x1024 等。不指定则由 LLM 智能选或用模型默认尺寸。",
         },
-        "proxy": {
-            "enabled": ConfigField(
-                type=bool,
-                default=False,
-                description="是否启用代理。开启后所有API请求将通过代理服务器",
-                label="启用代理",
-                order=1
-            ),
-            "url": ConfigField(
-                type=str,
-                default="http://127.0.0.1:7890",
-                description="代理服务器地址，格式：http://host:port。支持HTTP/HTTPS/SOCKS5代理",
-                label="代理地址",
-                hint="支持 HTTP、HTTPS、SOCKS5 代理",
-                example="http://127.0.0.1:7890",
-                placeholder="http://127.0.0.1:7890",
-                depends_on="proxy.enabled",
-                depends_value=True,
-                order=2
-            ),
-            "timeout": ConfigField(
-                type=int,
-                default=60,
-                description="代理连接超时时间（秒），建议30-120秒",
-                label="超时时间",
-                min=10,
-                max=300,
-                depends_on="proxy.enabled",
-                depends_value=True,
-                order=3
-            )
+        "selfie_mode": {
+            "type": "boolean",
+            "description": "可选：是否启用自拍模式（默认 false）。启用后会自动添加自拍场景和手部动作。",
         },
-        "styles": {
-            "cartoon": ConfigField(
-                type=str,
-                default="cartoon style, anime style, colorful, vibrant colors, clean lines",
-                description="卡通风格提示词",
-                label="卡通风格",
-                input_type="textarea",
-                rows=3,
-                order=1
-            )
+        "selfie_style": {
+            "type": "string",
+            "description": "自拍风格：standard（前置自拍）/ mirror（对镜自拍）/ photo（第三人称照片）。仅 selfie_mode=true 时生效。",
+            "enum": ["standard", "mirror", "photo"],
         },
-        "style_aliases": {
-            "cartoon": ConfigField(
-                type=str,
-                default="卡通",
-                description="cartoon 风格的中文别名，支持多别名用逗号分隔",
-                label="卡通别名",
-                placeholder="卡通,动漫",
-                order=1
-            )
-        },
-        "selfie": {
-            "enabled": ConfigField(
-                type=bool,
-                default=True,
-                description="是否启用自拍模式功能",
-                label="启用自拍",
-                order=1
-            ),
-            "reference_image_path": ConfigField(
-                type=str,
-                default="",
-                description="自拍参考图片路径（相对于插件目录或绝对路径）。配置后自动使用图生图模式，留空则使用纯文生图。若模型不支持图生图会自动回退",
-                label="参考图片",
-                placeholder="images/reference.png",
-                depends_on="selfie.enabled",
-                depends_value=True,
-                order=2
-            ),
-            "prompt_prefix": ConfigField(
-                type=str,
-                default="",
-                description="自拍模式专用提示词前缀。用于添加Bot的默认形象特征（发色、瞳色、服装风格等）。例如：'blue hair, red eyes, school uniform, 1girl'",
-                label="提示词前缀",
-                input_type="textarea",
-                rows=2,
-                placeholder="blue hair, red eyes, school uniform, 1girl",
-                depends_on="selfie.enabled",
-                depends_value=True,
-                order=3
-            ),
-            "negative_prompt": ConfigField(
-                type=str,
-                default="",
-                description="自拍模式基础负面提示词。所有风格自动附加手部质量负面提示词，standard 风格额外附加防双手拿手机提示词。此处可添加额外的负面提示词",
-                label="负面提示词",
-                input_type="textarea",
-                rows=3,
-                placeholder="lowres, bad anatomy, bad hands, extra fingers",
-                depends_on="selfie.enabled",
-                depends_value=True,
-                order=4
-            ),
-            "schedule_enabled": ConfigField(
-                type=bool,
-                default=True,
-                description="是否启用日程增强自拍。开启后手动自拍会结合日程活动数据生成更贴合情境的场景（需安装 autonomous_planning 插件）。可通过 /dr selfie on|off 按聊天流覆盖",
-                label="日程增强",
-                depends_on="selfie.enabled",
-                depends_value=True,
-                order=5
-            ),
-            "default_style": ConfigField(
-                type=str,
-                default="standard",
-                description="自拍默认风格（手动和自动自拍共用）：standard(前置自拍)/mirror(对镜自拍)/photo(第三人称照片)。可通过 /dr selfie standard|mirror|photo 按聊天流覆盖",
-                label="默认自拍风格",
-                choices=["standard", "mirror", "photo"],
-                depends_on="selfie.enabled",
-                depends_value=True,
-                order=6
-            )
-        },
-        "auto_recall": {
-            "enabled": ConfigField(
-                type=bool,
-                default=False,
-                description="是否启用自动撤回功能（总开关）。关闭后所有模型的撤回都不生效",
-                label="启用撤回",
-                order=1
-            )
-        },
-        "prompt_optimizer": {
-            "enabled": ConfigField(
-                type=bool,
-                default=True,
-                description="是否启用提示词优化器。开启后会使用 MaiBot 主 LLM 将用户描述优化为专业英文提示词",
-                label="启用优化器",
-                order=1
-            )
-        },
-        "auto_selfie": {
-            "enabled": ConfigField(
-                type=bool,
-                default=False,
-                description="是否启用自动自拍。需同时安装 autonomous_planning 插件（提供日程数据）和 Maizone 插件（发布到QQ空间）。无日程数据时自动跳过",
-                label="启用自动自拍",
-                order=1
-            ),
-            "interval_minutes": ConfigField(
-                type=int,
-                default=120,
-                description="自拍间隔（分钟），建议60-240",
-                label="自拍间隔",
-                min=10,
-                max=1440,
-                depends_on="auto_selfie.enabled",
-                depends_value=True,
-                order=2
-            ),
-            "selfie_model": ConfigField(
-                type=str,
-                default="model1",
-                description="自拍使用的模型ID（对应模型管理中的配置）",
-                label="自拍模型",
-                placeholder="model1",
-                depends_on="auto_selfie.enabled",
-                depends_value=True,
-                order=3
-            ),
-            "quiet_hours_start": ConfigField(
-                type=str,
-                default="00:00",
-                description="安静时段开始时间（HH:MM），此时段内不发送自拍",
-                label="安静开始",
-                example="00:00",
-                placeholder="00:00",
-                depends_on="auto_selfie.enabled",
-                depends_value=True,
-                order=4
-            ),
-            "quiet_hours_end": ConfigField(
-                type=str,
-                default="07:00",
-                description="安静时段结束时间（HH:MM）",
-                label="安静结束",
-                placeholder="07:00",
-                depends_on="auto_selfie.enabled",
-                depends_value=True,
-                order=5
-            ),
-            "caption_enabled": ConfigField(
-                type=bool,
-                default=True,
-                description="是否为自拍生成配文",
-                label="生成配文",
-                depends_on="auto_selfie.enabled",
-                depends_value=True,
-                order=6
-            ),
-        },
-        "models": {},
-        # 基础模型配置模板
-        "models.model1": {
-            "name": ConfigField(
-                type=str,
-                default="魔搭潦草模型",
-                description="模型显示名称，在模型列表中展示，版本更新后请手动从 old 目录恢复配置",
-                label="模型名称",
-                group="connection",
-                order=1
-            ),
-            "base_url": ConfigField(
-                type=str,
-                default="https://api-inference.modelscope.cn/v1",
-                description="API服务地址。示例: OpenAI=https://api.openai.com/v1, 硅基流动=https://api.siliconflow.cn/v1, 豆包=https://ark.cn-beijing.volces.com/api/v3, 魔搭=https://api-inference.modelscope.cn/v1, Gemini=https://generativelanguage.googleapis.com",
-                label="API地址",
-                example="https://api.siliconflow.cn/v1",
-                required=True,
-                placeholder="https://api.example.com/v1",
-                group="connection",
-                order=2
-            ),
-            "api_key": ConfigField(
-                type=str,
-                default="Bearer xxxxxxxxxxxxxxxxxxxxxx",
-                description="API密钥。统一填写 'Bearer xxx' 格式即可，doubao/gemini/shatangyun 等 SDK 格式会自动去除 Bearer 前缀",
-                label="API密钥",
-                hint="统一使用 'Bearer xxx' 格式",
-                input_type="password",
-                required=True,
-                placeholder="Bearer sk-xxx",
-                group="connection",
-                order=3
-            ),
-            "format": ConfigField(
-                type=str,
-                default="openai",
-                description="API格式。openai=通用格式，openai-chat=Chat Completions生图，doubao=豆包，gemini=Gemini，modelscope=魔搭，shatangyun=砂糖云(NovelAI)，mengyuai=梦羽AI，zai=Zai(Gemini转发)，comfyui=本地ComfyUI工作流",
-                label="API格式",
-                choices=["openai", "openai-chat", "gemini", "doubao", "modelscope", "shatangyun", "mengyuai", "zai", "comfyui"],
-                required=True,
-                group="connection",
-                order=4
-            ),
-            "model": ConfigField(
-                type=str,
-                default="cancel13/liaocao",
-                description="模型标识。梦羽AI 格式填模型索引数字（如 0）。ComfyUI 格式填工作流文件名（如 workflow.json），工作流放在插件 workflow/ 目录下，也可填绝对路径",
-                label="模型标识",
-                placeholder="model-name / 0 / workflow.json",
-                required=True,
-                group="connection",
-                order=5
-            ),
-            "fixed_size_enabled": ConfigField(
-                type=bool,
-                default=False,
-                description="是否固定图片尺寸。开启后强制使用 default_size，关闭则由 MaiBot LLM 根据内容自动选择。豆包格式建议开启",
-                label="固定尺寸",
-                group="params",
-                order=6
-            ),
-            "default_size": ConfigField(
-                type=str,
-                default="1024x1024",
-                description="默认图片尺寸。像素格式: 1024x1024。Gemini/Zai 填宽高比: 16:9 或 16:9-2K。豆包填分辨率等级: 2K（seededit 填 adaptive）",
-                label="默认尺寸",
-                hint="像素/宽高比/分辨率等级，按 API 要求填写",
-                placeholder="1024x1024 / 16:9-2K / 2K",
-                group="params",
-                order=7
-            ),
-            "seed": ConfigField(
-                type=int,
-                default=-1,
-                description="随机种子，固定值可确保结果可复现。-1 表示每次随机",
-                label="随机种子",
-                min=-1,
-                max=2147483647,
-                group="params",
-                order=8
-            ),
-            "guidance_scale": ConfigField(
-                type=float,
-                default=2.5,
-                description="引导强度（CFG）。值越高越严格遵循提示词。豆包 seededit 推荐 5.5，硅基流动/魔搭推荐 2.5-7.5",
-                label="引导强度",
-                min=0.0,
-                max=20.0,
-                step=0.5,
-                group="params",
-                order=9
-            ),
-            "num_inference_steps": ConfigField(
-                type=int,
-                default=20,
-                description="推理步数，影响质量和速度。推荐20-50",
-                label="推理步数",
-                min=1,
-                max=150,
-                group="params",
-                order=10
-            ),
-            "watermark": ConfigField(
-                type=bool,
-                default=True,
-                description="是否添加水印",
-                label="水印",
-                group="params",
-                order=11
-            ),
-            "custom_prompt_add": ConfigField(
-                type=str,
-                default=", Nordic picture book art style, minimalist flat design, liaocao",
-                description="正面提示词增强，自动添加到用户描述后",
-                label="正面增强词",
-                input_type="textarea",
-                rows=2,
-                group="prompts",
-                order=12
-            ),
-            "negative_prompt_add": ConfigField(
-                type=str,
-                default="Pornography,nudity,lowres, bad anatomy, bad hands, text, error",
-                description="负面提示词，避免不良内容。豆包/Gemini 格式不支持此参数可留空",
-                label="负面提示词",
-                input_type="textarea",
-                rows=2,
-                group="prompts",
-                order=13
-            ),
-            "artist": ConfigField(
-                type=str,
-                default="",
-                description="艺术家风格标签（砂糖云专用）。留空则不添加",
-                label="艺术家标签",
-                group="prompts",
-                order=14
-            ),
-            "support_img2img": ConfigField(
-                type=bool,
-                default=True,
-                description="该模型是否支持图生图功能。设为false时会自动降级为文生图",
-                label="支持图生图",
-                group="prompts",
-                order=15
-            ),
-            "auto_recall_delay": ConfigField(
-                type=int,
-                default=0,
-                description="自动撤回延时（秒）。大于0时启用撤回，0表示不撤回。需先在「自动撤回配置」中开启总开关",
-                label="撤回延时",
-                hint="需先在「自动撤回配置」中开启总开关",
-                min=0,
-                max=120,
-                group="prompts",
-                order=16
-            ),
-            # ---- 平台专用参数 ----
-            "cfg": ConfigField(
-                type=float,
-                default=0,
-                description="砂糖云专用：CFG Rescale 参数（与引导强度不同），默认0",
-                label="CFG Rescale",
-                hint="仅砂糖云格式生效",
-                min=0.0,
-                max=1.0,
-                step=0.1,
-                group="platform",
-                order=20
-            ),
-            "sampler": ConfigField(
-                type=str,
-                default="k_euler_ancestral",
-                description="砂糖云专用：采样器名称",
-                label="采样器",
-                hint="仅砂糖云格式生效",
-                choices=["k_euler_ancestral", "k_euler", "k_dpmpp_2s_ancestral", "k_dpmpp_2m_sde", "k_dpmpp_2m", "k_dpmpp_sde"],
-                group="platform",
-                order=21
-            ),
-            "nocache": ConfigField(
-                type=int,
-                default=0,
-                description="砂糖云专用：是否禁用缓存，0=使用缓存，1=禁用",
-                label="禁用缓存",
-                hint="仅砂糖云格式生效",
-                min=0,
-                max=1,
-                group="platform",
-                order=22
-            ),
-            "noise_schedule": ConfigField(
-                type=str,
-                default="karras",
-                description="砂糖云专用：噪声调度方案",
-                label="噪声调度",
-                hint="仅砂糖云格式生效",
-                choices=["karras", "native", "exponential", "polyexponential"],
-                group="platform",
-                order=23
-            ),
+        "free_hand_action": {
+            "type": "string",
+            "description": "自由手部动作描述（英文）。指定后将使用此动作而非随机生成。仅 selfie_mode=true 时生效。",
         },
     }
 
-    def __init__(self, plugin_dir: str):
-        """初始化插件，集成增强配置管理器"""
-        import toml
-        # 在父类初始化前读取原始配置文件
-        config_path = os.path.join(plugin_dir, self.config_file_name)
-        original_config = None
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, "r", encoding="utf-8") as f:
-                    original_config = toml.load(f)
-                print(f"[MaisArtJournal] 读取原始配置文件: {config_path}")
-            except Exception as e:
-                print(f"[MaisArtJournal] 读取原始配置失败: {e}")
-        
-        # 先调用父类初始化，这会加载配置并可能触发 MaiBot 迁移
-        super().__init__(plugin_dir)
-        
-        # 初始化增强配置管理器
-        self.enhanced_config_manager = EnhancedConfigManager(plugin_dir, self.config_file_name)
-        
-        # 检查并更新配置（如果需要），传入原始配置
-        self._enhance_config_management(original_config)
+    def __init__(self):
+        super().__init__()
+        self._plugin_dir: str = os.path.dirname(os.path.abspath(__file__))
+        self._dispatcher: Optional["CommandDispatcher"] = None
+        self._action_pipeline: Optional["Pipeline"] = None
+        self._auto_selfie_task: Optional["AutoSelfieTask"] = None
 
-        # 初始化自动自拍任务
-        self._auto_selfie_task = None
-        self._auto_selfie_pending = False
-        if self.get_config("auto_selfie.enabled", False):
-            from .core.selfie import AutoSelfieTask
-            self._auto_selfie_task = AutoSelfieTask(self)
-            try:
-                asyncio.create_task(self._start_auto_selfie_after_delay())
-            except RuntimeError:
-                # 事件循环未就绪，标记待启动，在首次组件执行时懒启动
-                self._auto_selfie_pending = True
-                print("[MaisArtJournal] 事件循环未就绪，自动自拍任务将在首次执行时懒启动")
+    # ── 公共属性 ──────────────────────────────────
 
-    async def _start_auto_selfie_after_delay(self):
-        """延迟启动自动自拍任务"""
-        await asyncio.sleep(15)
-        if self._auto_selfie_task:
-            await self._auto_selfie_task.start()
-            self._auto_selfie_pending = False
+    @property
+    def plugin_dir(self) -> str:
+        """插件目录绝对路径"""
+        return self._plugin_dir
 
-    def try_start_auto_selfie(self):
-        """尝试懒启动自动自拍任务（供组件首次执行时调用）"""
-        if not self._auto_selfie_pending or not self._auto_selfie_task:
-            return
-        try:
-            asyncio.create_task(self._start_auto_selfie_after_delay())
-            self._auto_selfie_pending = False
-        except RuntimeError:
-            pass  # 仍无事件循环，下次再试
-
-    def _enhance_config_management(self, original_config=None):
-        """增强配置管理：备份、版本检查、智能合并
-        
-        Args:
-            original_config: 从磁盘读取的原始配置（在父类初始化前读取），用于恢复用户自定义值
-        """
-        # 获取期望的配置版本
-        expected_version = self._get_expected_config_version()
-        
-        # 将config_schema转换为EnhancedConfigManager需要的格式
-        schema_for_manager = self._convert_schema_for_manager()
-        
-        # 生成默认配置结构
-        default_config = self._generate_default_config_from_schema()
-        
-        # 确定要使用的旧配置：优先使用传入的原始配置，其次从备份文件加载
-        old_config = original_config
-        if old_config is None:
-            old_dir = os.path.join(self.plugin_dir, "old")
-            if os.path.exists(old_dir):
-                import toml
-                # 查找最新的备份文件（按时间戳排序），包括 auto_backup、new_backup 和 backup 文件
-                backup_files = []
-                for fname in os.listdir(old_dir):
-                    if (fname.startswith(self.config_file_name + ".backup_") or
-                        fname.startswith(self.config_file_name + ".new_backup_") or
-                        fname.startswith(self.config_file_name + ".auto_backup_")) and fname.endswith(".toml"):
-                        backup_files.append(fname)
-                if backup_files:
-                    # 按时间戳排序（文件名中包含 _YYYYMMDD_HHMMSS）
-                    backup_files.sort(reverse=True)
-                    latest_backup = os.path.join(old_dir, backup_files[0])
-                    try:
-                        with open(latest_backup, "r", encoding="utf-8") as f:
-                            old_config = toml.load(f)
-                        print(f"[MaisArtJournal] 从备份文件加载原始配置: {backup_files[0]}")
-                    except Exception as e:
-                        print(f"[MaisArtJournal] 加载备份文件失败: {e}")
-        
-        # 版本不同时才备份（版本更新前 update_config_if_needed 会自动备份）
-        current_config = self.enhanced_config_manager.load_config()
-        if current_config:
-            current_version = self.enhanced_config_manager.get_config_version(current_config)
-            if current_version != expected_version:
-                print(f"[MaisArtJournal] 配置版本 v{current_version} != v{expected_version}，创建备份")
-                self.enhanced_config_manager.backup_config(current_version)
+    def get_config(self, key: str, default: Any = None) -> Any:
+        """嵌套 dot-path 配置读取（保留给 runtime_state / model_registry 等历史接口）"""
+        config = self.get_plugin_config_data()
+        current: Any = config
+        for part in key.split("."):
+            if isinstance(current, dict) and part in current:
+                current = current[part]
             else:
-                print(f"[MaisArtJournal] 配置版本 v{current_version} 已是最新，跳过备份")
-        
-        # 使用增强配置管理器检查并更新配置
-        # 传入旧配置（如果存在）以恢复用户自定义值
-        updated_config = self.enhanced_config_manager.update_config_if_needed(
-            expected_version=expected_version,
-            default_config=default_config,
-            schema=schema_for_manager,
-            old_config=old_config
+                return default
+        return current if current is not None else default
+
+    # ── 生命周期 ──────────────────────────────────
+
+    async def on_load(self) -> None:
+        from .core.commands.dispatcher import CommandDispatcher
+        from .core.pipeline import build_action_pipeline
+
+        self._dispatcher = CommandDispatcher(self)
+        self._action_pipeline = build_action_pipeline()
+
+        if self.config.selfie.auto_enabled:
+            from .core.selfie.auto_selfie_task import AutoSelfieTask
+            task = AutoSelfieTask(self)
+            await task.start()  # 成功后才赋值
+            self._auto_selfie_task = task
+
+        logger.info(f"麦麦绘卷已加载 (v{self.config.plugin.config_version}, Pipeline 架构)")
+
+    async def on_unload(self) -> None:
+        if self._auto_selfie_task is not None:
+            try:
+                await self._auto_selfie_task.stop()
+            except Exception as e:
+                logger.warning(f"自动自拍任务停止失败: {e}")
+        logger.info("麦麦绘卷已卸载")
+
+    async def on_config_update(self, scope: str, config_data: dict, version: str) -> None:
+        if scope != "self":
+            return
+
+        # 触发版本备份
+        from .core.config.backup import backup_config_if_version_changed
+        expected_version = self.config.plugin.config_version
+        current_version = ""
+        try:
+            if isinstance(config_data, dict):
+                plugin_section = config_data.get("plugin")
+                if isinstance(plugin_section, dict):
+                    current_version = str(plugin_section.get("config_version", ""))
+        except Exception:
+            current_version = ""
+        backup_config_if_version_changed(
+            self._plugin_dir, "config.toml", expected_version, current_version,
         )
-        
-        # 如果配置有更新，更新self.config
-        if updated_config and updated_config != self.config:
-            self.config = updated_config
-            # 同时更新enable_plugin状态
-            if "plugin" in self.config and "enabled" in self.config["plugin"]:
-                self.enable_plugin = self.config["plugin"]["enabled"]
-    
-    def _get_expected_config_version(self) -> str:
-        """获取期望的配置版本号"""
-        if "plugin" in self.config_schema and isinstance(self.config_schema["plugin"], dict):
-            config_version_field = self.config_schema["plugin"].get("config_version")
-            if isinstance(config_version_field, ConfigField):
-                return config_version_field.default
-        return "1.0.0"
-    
-    def _convert_schema_for_manager(self) -> Dict[str, Any]:
-        """将ConfigField格式的schema转换为EnhancedConfigManager需要的格式"""
-        schema_for_manager = {}
-        
-        for section, fields in self.config_schema.items():
-            if not isinstance(fields, dict):
-                continue
-                
-            section_schema = {}
-            for field_name, field in fields.items():
-                if isinstance(field, ConfigField):
-                    section_schema[field_name] = {
-                        "description": field.description,
-                        "default": field.default,
-                        "required": field.required,
-                        "choices": field.choices if field.choices else None,
-                        "example": field.example
-                    }
-            
-            schema_for_manager[section] = section_schema
-        
-        return schema_for_manager
-    
-    def _generate_default_config_from_schema(self) -> Dict[str, Any]:
-        """从schema生成默认配置结构"""
-        default_config = {}
-        
-        for section, fields in self.config_schema.items():
-            if not isinstance(fields, dict):
-                continue
-                
-            section_config = {}
-            for field_name, field in fields.items():
-                if isinstance(field, ConfigField):
-                    section_config[field_name] = field.default
-            
-            default_config[section] = section_config
-        
-        return default_config
 
-    def get_plugin_components(self) -> List[Tuple[ComponentInfo, Type]]:
-        """返回插件包含的组件列表"""
-        enable_unified_generation = self.get_config("components.enable_unified_generation", True)
-        enable_pic_command = self.get_config("components.enable_pic_command", True)
-        enable_pic_config = self.get_config("components.enable_pic_config", True)
-        enable_pic_style = self.get_config("components.enable_pic_style", True)
-        components = []
+        # 自动自拍随配置同步
+        try:
+            if self.config.selfie.auto_enabled:
+                if self._auto_selfie_task is None:
+                    from .core.selfie.auto_selfie_task import AutoSelfieTask
+                    self._auto_selfie_task = AutoSelfieTask(self)
+                    await self._auto_selfie_task.start()
+            else:
+                if self._auto_selfie_task is not None:
+                    await self._auto_selfie_task.stop()
+                    self._auto_selfie_task = None
+        except Exception as e:
+            logger.warning(f"配置更新时调整自动自拍任务失败: {e}")
 
-        if enable_unified_generation:
-            components.append((MaisArtAction.get_action_info(), MaisArtAction))
+    # ── Tool: 智能生图 ──────────────────────────
 
-        # 优先注册更具体的配置管理命令，避免被通用风格命令拦截
-        if enable_pic_config:
-            components.append((PicConfigCommand.get_command_info(), PicConfigCommand))
+    @Tool(
+        "draw_picture",
+        description=_DRAW_TOOL_DESCRIPTION,
+        parameters=_DRAW_TOOL_PARAMETERS,
+    )
+    async def handle_draw_picture(self, **kwargs: Any):
+        """智能生图入口（@Tool），LLM/规划器调用时由 host 把 function_args 平铺进 kwargs，
+        同时附带 stream_id / chat_id / group_id / user_id / platform 上下文字段。
+        所有逻辑委托给 action pipeline。
+        """
+        if self._action_pipeline is None:
+            logger.error("Action pipeline 尚未初始化")
+            return False, "插件未就绪"
 
-        if enable_pic_style:
-            components.append((PicStyleCommand.get_command_info(), PicStyleCommand))
+        from .core.pipeline import build_request_from_action_kwargs, make_pipeline_context
 
-        # 最后注册通用的风格命令，以免覆盖特定命令
-        if enable_pic_command:
-            components.append((PicGenerationCommand.get_command_info(), PicGenerationCommand))
+        req = await build_request_from_action_kwargs(self, kwargs)
+        if req is None:
+            return False, "已跳过"
+
+        ctx = make_pipeline_context(self, req)
+        out = await self._action_pipeline.run(req, ctx)
+        return out.success, out.user_message or out.error or ("生成成功" if out.success else "生成失败")
+
+    # ── API: 对外暴露给其他插件调用 ───────────────────
+
+    @API(
+        "generate_image",
+        description=(
+            "生成图片（文生图 / 图生图，自动识别）并返回 base64，不发送到聊天流。"
+            "其他插件可通过 ctx.api.call('1021143806.mais_art_journal.generate_image', "
+            "prompt=..., model_id=..., input_image_base64=..., ...) 复用本插件配置的全部模型。"
+        ),
+        version="1",
+        public=True,
+    )
+    async def api_generate_image(
+        self,
+        prompt: str = "",
+        model_id: str = "",
+        size: str = "",
+        strength: Optional[float] = None,
+        input_image_base64: Optional[str] = None,
+        negative_prompt: str = "",
+        selfie_mode: bool = False,
+        selfie_style: str = "standard",
+        free_hand_action: str = "",
+        use_cache: bool = False,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """对外 API：生成图片，返回 base64
+
+        Args:
+            prompt: 图片描述（必填，中英文均可；启用 prompt_optimizer 时会自动优化为英文 SD 提示词）
+            model_id: 模型 ID（如 model1、model2），留空使用 default_model
+            size: 图片尺寸，如 "1024x1024"；留空由 LLM 自选或用模型默认
+            strength: 图生图强度 0.1-1.0；仅 input_image_base64 非空时生效，默认 0.7
+            input_image_base64: 图生图输入图（纯 base64 字符串，不含 data:image/... 前缀）
+            negative_prompt: 额外负面提示词（合并到模型自身的 negative_prompt_add）
+            selfie_mode: 是否启用自拍模式（默认 false）
+            selfie_style: 自拍风格 standard/mirror/photo（仅 selfie_mode=true 生效）
+            free_hand_action: 自由手部动作（英文，仅 selfie_mode=true 生效）
+            use_cache: 是否参与缓存读写（默认 false，每次都重新生成）
+
+        Returns:
+            Dict[str, Any]: {
+                "success": bool,                # 是否成功
+                "image_base64": str,            # 成功时为生成图的 base64（不含前缀）
+                "model_id": str,                # 实际使用的模型 ID
+                "size": str,                    # 实际使用的尺寸
+                "is_img2img": bool,             # 是否走的图生图分支
+                "error": str,                   # 失败时的错误描述
+            }
+
+        Examples:
+            ::
+
+                result = await self.ctx.api.call(
+                    "1021143806.mais_art_journal.generate_image",
+                    prompt="一只在月光下打哈欠的银发狐妖",
+                    model_id="model1",
+                    size="1024x1024",
+                )
+                if result["success"]:
+                    image_bytes = base64.b64decode(result["image_base64"])
+        """
+        del kwargs  # 预留扩展，当前未使用
+
+        if not prompt or not str(prompt).strip():
+            return {
+                "success": False,
+                "error": "prompt 不能为空",
+                "image_base64": "",
+                "model_id": "",
+                "size": "",
+                "is_img2img": False,
+            }
+
+        # 参数标准化
+        strength_f: Optional[float] = None
+        if strength is not None:
+            try:
+                strength_f = float(strength)
+                if not (0.1 <= strength_f <= 1.0):
+                    strength_f = 0.7
+            except (ValueError, TypeError):
+                strength_f = 0.7
+
+        style = str(selfie_style or "standard").strip().lower()
+        if style not in ("standard", "mirror", "photo"):
+            style = "standard"
+
+        # 构造 pipeline 请求（source=standalone：跳过 chat-stream 级的模型禁用检查）
+        from .core.pipeline import (
+            GenerationRequest,
+            build_action_pipeline,
+            make_pipeline_context,
+        )
+
+        req = GenerationRequest(
+            description=str(prompt).strip(),
+            model_id=str(model_id or "").strip(),
+            size=str(size or "").strip(),
+            strength=strength_f,
+            input_image_base64=input_image_base64 or None,
+            extra_negative_prompt=str(negative_prompt or "").strip() or None,
+            is_selfie=bool(selfie_mode),
+            selfie_style=style,  # type: ignore[arg-type]
+            free_hand_action=str(free_hand_action or "").strip(),
+            send_image=False,
+            update_cache=bool(use_cache),
+            schedule_recall=False,
+            debug_info=False,
+            silent_img2img_fallback=True,
+            stream_id="",
+            chat_id="",
+            log_prefix="[API]",
+            source="standalone",
+        )
+
+        pipeline = self._action_pipeline if self._action_pipeline is not None else build_action_pipeline()
+        pipeline_ctx = make_pipeline_context(self, req)
+        out = await pipeline.run(req, pipeline_ctx)
+
+        return {
+            "success": bool(out.success),
+            "image_base64": out.resolved_image_data or "",
+            "model_id": req.model_id,
+            "size": req.final_size or req.size,
+            "is_img2img": bool(req.is_img2img),
+            "error": out.error or "",
+        }
+
+    @API(
+        "list_image_models",
+        description="列出当前插件已配置的图片生成模型（id / 名称 / API 格式 / 是否支持图生图）",
+        version="1",
+        public=True,
+    )
+    async def api_list_image_models(self, **kwargs: Any) -> Dict[str, Any]:
+        """对外 API：列出可用模型
+
+        Returns:
+            Dict[str, Any]: {
+                "success": bool,
+                "default_model": str,           # basic.default_model
+                "models": list[dict],           # [{"id", "name", "format", "model", "support_img2img"}]
+            }
+        """
+        del kwargs
+        try:
+            from .core.config import list_models
+            items = list_models(self)
+            models = [
+                {
+                    "id": mid,
+                    "name": cfg.get("name", ""),
+                    "format": cfg.get("format", ""),
+                    "model": cfg.get("model", ""),
+                    "support_img2img": bool(cfg.get("support_img2img", True)),
+                    "default_size": cfg.get("default_size", ""),
+                }
+                for mid, cfg in items.items()
+            ]
+            return {
+                "success": True,
+                "default_model": self.config.basic.default_model,
+                "models": models,
+            }
+        except Exception as exc:
+            logger.error(f"api_list_image_models 失败: {exc}", exc_info=True)
+            return {"success": False, "error": str(exc), "models": []}
+
+    # ── Command: /dr 全套（集中分发） ───────────────
+
+    @Command(
+        "dr",
+        description="麦麦绘卷命令套件（生图 / 模型管理 / 风格管理 / 自拍开关）。命令前缀可在「基础配置.命令前缀」修改后重启 MaiBot 生效",
+        pattern=r"(?:.*，说：\s*)?/dr(?:\s+(?P<rest>.+))?$",
+    )
+    async def handle_dr(self, **kwargs: Any):
+        """命令入口：实际 pattern 由 get_components() 按 config.basic.command_prefix 动态注入
+
+        装饰器里的 pattern 仅是默认占位（/dr）。get_components() 返回 host 之前会按
+        当前 config.basic.command_prefix 重写 metadata.command_pattern 为精确前缀，
+        避免抢占其他插件的命令（如 /mute on）。修改前缀后**重启 MaiBot** 即生效。
+        """
+        if self._dispatcher is None:
+            logger.error("CommandDispatcher 尚未初始化")
+            return False, "插件未就绪", True
+
+        matched = kwargs.get("matched_groups") or {}
+        message = kwargs.get("message")
+
+        # host 平铺进来的上下文字段（component_query._build_command_executor 注入）
+        stream_id = str(kwargs.get("stream_id") or "")
+        user_id = str(kwargs.get("user_id") or "")
+        group_id = str(kwargs.get("group_id") or "")
+
+        # 昵称/群名仅在 message dict 里携带，按需取
+        user_nickname, group_name = _extract_display_names(message)
+
+        # 引用拼接误触发检测：取用户自己实际输入的文本，跳过 reply / image 等段
+        configured_prefix = (self.config.basic.command_prefix or "/dr").strip()
+        if not configured_prefix.startswith("/"):
+            configured_prefix = "/" + configured_prefix
+        if _looks_like_quoted_command(message, configured_prefix):
+            logger.info("检测到引用了别人的命令消息且用户自身未发命令，透传")
+            return False, "quoted command from others", False
+
+        rest = (matched.get("rest") or "").strip()
+        return await self._dispatcher.dispatch(
+            stream_id, message, rest,
+            user_id=user_id,
+            group_id=group_id,
+            user_nickname=user_nickname,
+            group_name=group_name,
+        )
+
+    # ── get_components 覆写：动态注入用户配置的精确命令前缀 ──
+
+    def get_components(self) -> list[dict[str, Any]]:
+        """注入 basic.command_prefix 到 dr command 的 pattern，避免宽匹配抢占其他插件"""
+        components = super().get_components()
+
+        # 使用 _plugin_config_data 而不是 self.config，避免配置未注入时的 RuntimeError
+        try:
+            basic_section = self._plugin_config_data.get("basic", {})
+            if isinstance(basic_section, dict):
+                prefix = basic_section.get("command_prefix", "/dr")
+            else:
+                prefix = "/dr"
+        except Exception:
+            prefix = "/dr"
+
+        prefix = str(prefix or "/dr").strip()
+        if not prefix.startswith("/"):
+            prefix = "/" + prefix
+        escaped = re.escape(prefix)
+        new_pattern = rf"(?:.*，说：\s*)?{escaped}(?:\s+(?P<rest>.+))?$"
+
+        for comp in components:
+            if (
+                comp.get("name") == "dr"
+                and str(comp.get("type", "")).upper() == "COMMAND"
+            ):
+                metadata = comp.get("metadata")
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                    comp["metadata"] = metadata
+                metadata["command_pattern"] = new_pattern
+                logger.info(f"麦麦绘卷命令前缀生效: {prefix!r} (pattern={new_pattern!r})")
+                break
 
         return components
+
+
+def create_plugin() -> MaisArtPlugin:
+    """SDK Runner 创建插件实例的入口"""
+    return MaisArtPlugin()
+
+
+def _extract_user_text_segments(message: Any) -> tuple[str, bool]:
+    """从消息对象提取"用户自身实际输入的纯文本"
+
+    跳过 ReplyComponent / ImageComponent / EmojiComponent / AtComponent 等非用户文本段，
+    仅拼接 TextComponent。用于区分"用户自己发的命令"和"引用别人的命令消息后拼接出来的文本"。
+
+    支持三种消息形态：
+    1. SDK 2.x 的 RPC 序列化 dict：``message["raw_message"]`` 是 list[dict]，
+       每段 ``{"type": "text"|"image"|"reply"|...}``。
+    2. SessionMessage（同进程内）：``message.raw_message.components`` 列表。
+    3. 老 message_segment 形态：``message.message_segment`` 是 Seg 树。
+
+    Returns:
+        (user_text, has_reply): 用户净输入文本 + 该消息是否含引用段
+    """
+    if message is None:
+        return "", False
+
+    parts: list[str] = []
+    has_reply = False
+
+    # 路径 1：dict 形态（SDK 2.x command 入口）
+    if isinstance(message, dict):
+        raw = message.get("raw_message")
+        if isinstance(raw, list):
+            for seg in raw:
+                if not isinstance(seg, dict):
+                    continue
+                stype = str(seg.get("type") or "").lower()
+                if stype == "reply":
+                    has_reply = True
+                    continue
+                if stype == "text":
+                    text = seg.get("data")
+                    if isinstance(text, str):
+                        parts.append(text)
+            return "".join(parts).strip(), has_reply
+        # raw_message 不是 list（罕见）→ 兜底走 reply_to 标记
+        if message.get("reply_to"):
+            has_reply = True
+        return "", has_reply
+
+    # 路径 2：SessionMessage / MaiMessage —— message.raw_message.components
+    raw_msg = getattr(message, "raw_message", None)
+    components = getattr(raw_msg, "components", None) if raw_msg is not None else None
+    if isinstance(components, (list, tuple)) and components:
+        for comp in components:
+            cls_name = type(comp).__name__
+            if cls_name == "ReplyComponent":
+                has_reply = True
+                continue
+            if cls_name == "TextComponent":
+                text = getattr(comp, "text", None)
+                if isinstance(text, str):
+                    parts.append(text)
+                continue
+            # 其他组件（Image/Emoji/At/Voice/Forward）忽略
+        return "".join(parts).strip(), has_reply
+
+    # 路径 3：老 Seg 树 —— message.message_segment
+    seg = getattr(message, "message_segment", None)
+    if seg is not None:
+        def _walk(s: Any) -> None:
+            nonlocal has_reply
+            if s is None:
+                return
+            stype = getattr(s, "type", None)
+            sdata = getattr(s, "data", None)
+            if stype == "reply":
+                has_reply = True
+                return
+            if stype == "text" and isinstance(sdata, str):
+                parts.append(sdata)
+                return
+            if stype == "seglist" and isinstance(sdata, (list, tuple)):
+                for child in sdata:
+                    _walk(child)
+
+        _walk(seg)
+        return "".join(parts).strip(), has_reply
+
+    # 路径 4：兜底 —— message.reply_to 非空表示这是引用消息
+    reply_to = getattr(message, "reply_to", None)
+    if reply_to:
+        has_reply = True
+    return "", has_reply
+
+
+def _extract_display_names(message: Any) -> tuple[str, str]:
+    """从消息对象提取 (user_nickname, group_name)，仅用于日志前缀。
+
+    优先 SDK 2.x dict 形态，其次老对象形态；取不到返回空串。
+    """
+    if message is None:
+        return "", ""
+
+    if isinstance(message, dict):
+        msg_info = message.get("message_info") or {}
+        if not isinstance(msg_info, dict):
+            return "", ""
+        user_info = msg_info.get("user_info") or {}
+        group_info = msg_info.get("group_info") or {}
+        nick = ""
+        gname = ""
+        if isinstance(user_info, dict):
+            nick = str(user_info.get("user_nickname") or user_info.get("user_cardname") or "")
+        if isinstance(group_info, dict):
+            gname = str(group_info.get("group_name") or "")
+        return nick, gname
+
+    msg_info = getattr(message, "message_info", None)
+    if msg_info is None:
+        return "", ""
+    user_info = getattr(msg_info, "user_info", None)
+    group_info = getattr(msg_info, "group_info", None)
+    nick = ""
+    gname = ""
+    if user_info is not None:
+        nick = str(getattr(user_info, "user_nickname", "") or getattr(user_info, "user_cardname", "") or "")
+    if group_info is not None:
+        gname = str(getattr(group_info, "group_name", "") or "")
+    return nick, gname
+
+
+def _looks_like_quoted_command(message: Any, configured_prefix: str) -> bool:
+    """判断 processed_plain_text 的命令命中是不是"引用别人命令消息"误触发
+
+    判定：消息含 reply 段 + 用户自己的纯文本不以 /<prefix> 开头 → 误触发。
+    若没有 reply 段（用户自己发的命令），返回 False。
+    若有 reply 段但用户自己也输入了 /<prefix> ...（如对图发 /dv cartoon），返回 False。
+    """
+    user_text, has_reply = _extract_user_text_segments(message)
+    if not has_reply:
+        return False
+    # 用户自己的输入为空 或 不以前缀开头 → 误触发
+    prefix_with_slash = configured_prefix if configured_prefix.startswith("/") else "/" + configured_prefix
+    if not user_text:
+        return True
+    lower_text = user_text.lstrip().lower()
+    lower_prefix = prefix_with_slash.lower()
+    if not (lower_text == lower_prefix or lower_text.startswith(lower_prefix + " ")):
+        return True
+    return False
