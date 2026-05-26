@@ -106,13 +106,6 @@
    git clone https://github.com/1021143806/mais-art-journal.git
    ```
 
-  - 如果使用豆包（火山方舟）API，需要安装豆包 SDK
-
-   ```shell
-   cd MaiBot
-   uv pip install "volcengine-python-sdk[ark]"
-   ```
-
   - 重启 maibot 后你会看到在当前插件文件夹 `MaiBot/plugins/mais_art_journal`中生成了一个配置文件 `config.toml`
   - 按照配置文件中的说明填写必要参数后重启 MaiBot 即可让你的麦麦学会不同画风的画画（如何申请 key 请自行前往对应平台官网查看 api 文档）
 
