@@ -1,16 +1,21 @@
 # 麦麦绘卷 (Claude MAInet) - 智能多模型图片生成插件
 
-基于 Maibot 插件的智能多模型图片生成插件，支持文生图和图生图自动识别。兼容OpenAI、豆包、Gemini、魔搭等多种API格式。提供命令式风格转换、自拍模式、自动自拍发说说、模型配置管理、结果缓存等功能。
+基于 MaiBot SDK 2.x 的智能多模型图片生成插件，支持文生图和图生图自动识别。兼容 OpenAI、OpenAI-Chat、豆包（火山方舟）、Gemini、魔搭、硅基流动、砂糖云、梦羽、智谱 GLM、阿里百炼 DashScope（通义千问/万相/Z-Image/可灵）、ComfyUI 等多种 API 格式。提供命令式风格转换、自拍模式、自动自拍发说说、日程感知、模型配置管理、运行时聊天流隔离状态、对外 @API 生图接口等功能。
 
 ## ✨ 主要特性
 
 ### 🎯 智能图片生成
 - **文生图**: 根据对话内容自动生成图片
 - **图生图**: 检测到消息中有图片时自动使用图生图模式
-- **自拍模式**: 支持 standard（前置自拍）/ mirror（对镜自拍）/ photo（第三人称照片）三种风格。优先使用 LLM 生成风格感知的手部动作，失败时回退到风格专属动作池。支持日程活动增强场景（需 autonomous_planning 插件），可配置参考图进行图生图
+- **自拍模式**: 支持 standard（前置自拍）/ mirror（对镜自拍）/ photo（第三人称照片）三种风格
+  - 优化的提示词权重，确保手机不在画面中（standard/photo）或仅在镜子中可见（mirror）
+  - 优先使用 LLM 生成风格感知的手部动作，失败时回退到风格专属动作池
+  - 支持日程活动增强场景（需 autonomous_planning 插件）
+  - 可配置参考图进行图生图
+  - 支持横版和竖版（由模型配置的 `default_size` 决定）
 - **提示词优化**: 自动将中文描述优化为专业英文 SD 提示词（自拍模式仅优化场景，不干扰角色外观）
 - **结果缓存**: 相同参数复用之前的结果
-- **自动撤回**: 可按模型配置延时撤回
+- **自动撤回**: 可按模型配置延时撤回（使用 NapCat 官方 API）
 
 ### 🎨/dr 命令系统
 
@@ -51,9 +56,14 @@
 
 定时生成自拍图片并发布到 QQ 空间说说。
 
-**依赖**:
-- `autonomous_planning` 插件（ https://github.com/xuqian13/autonomous_planning_plugin ）  — 提供日程数据（当前活动）
-- `Maizone` 插件（ https://github.com/Rabbit-Jia-Er/Maizone ） — 发布到 QQ 空间
+### 推荐周边插件（依赖）
+
+| 插件 | 作用 | 必需？ |
+|---|---|---|
+| [`MaiTrace`](https://github.com/Rabbit-Jia-Er/MaiTrace)（麦时迹） | QQ 空间自动化插件，提供发说说、刷空间、写日记等功能。自动自拍功能需要它来发布到 QQ 空间 | 否（不装时自动自拍不会发布到空间） |
+| [`xuqian13_autonomous-planning-plugin-v4`](https://github.com/xuqian13/autonomous_planning_plugin) | 日程规划插件，提供当前活动数据。自动自拍会根据日程生成场景 | 否（不装时自动自拍场景为"无活动"） |
+
+---
 
 **特性**:
 - 可配置间隔（默认 2 小时）
@@ -74,9 +84,9 @@
 | `doubao` | 豆包（火山引擎） | 使用 Ark SDK，支持 seed/guidance_scale/watermark |
 | `gemini` | Google Gemini | 原生 `generateContent` 接口，支持 Gemini 2.5/3 系列 |
 | `modelscope` | 魔搭社区 | 异步任务模式，自动轮询结果 |
+| `dashscope` | 阿里百炼 DashScope | 支持通义千问/万相/Z-Image/可灵等模型 |
 | `shatangyun` | 砂糖云 (NovelAI) | GET 请求，URL 参数传递 |
 | `mengyuai` | 梦羽 AI | 不支持图生图（须设 `support_img2img = false`） |
-| `zai` | Zai (Gemini 转发) | OpenAI 兼容的 chat/completions，支持宽高比/分辨率 |
 | `comfyui` | 本地 ComfyUI | 加载工作流 JSON，替换占位符，轮询结果（支持代理配置） |
 
 ---
@@ -312,7 +322,12 @@ watercolor = "水彩"
 - 需 Python 3.12+
 - 依赖 MaiBot 项目插件系统，目前改为一直支持最新版
 - MaiBot 项目地址：https://github.com/Mai-with-u/MaiBot
-- 火山方舟 api 需要通过 pip install 'volcengine-python-sdk[ark]' 安装方舟SDK
+- 如果使用豆包（火山方舟）API，需要安装豆包 SDK
+
+   ```shell
+   cd MaiBot
+   uv pip install "volcengine-python-sdk[ark]"
+   ```
 
 ## ⚠️ 注意事项
 
@@ -346,6 +361,11 @@ watercolor = "水彩"
 - MaiBot 0.8 版本更新，根据新插件系统进行重构。
 - Rabbit-Jia-Er 加入，添加可以调用多个模型和命令功能。
 - saberlights Kiuon 加入，添加自拍功能和自然语言命令功能。
+- v4.0.0 迁移到 MaiBot SDK 2.x，并重构为 Pipeline + 装饰器子命令架构：
+  - 4 条入口（智能 Action / `/dr` 风格 / `/dr` 自然语言 / 自动自拍 / 独立接口）复用同一组可组合 Step（解析模型 → 校验配置 → 协商尺寸 → 优化提示词 → 构造自拍提示词 → 合并负面 → 图生图回退 → 缓存查询 → 调用 API → 解析响应 → 解析图片 → 发送 → 写缓存 → 调度撤回）。
+  - 子命令通过 `@subcommand` 装饰器注册到查找表，新增子命令只需在 `core/commands/handlers/` 下加一个函数。
+  - 自拍提示词、动作池、风格约束、LLM 手部动作生成全部独立到 `core/prompts/selfie_prompt_builder.py`。
+  - API 客户端依赖 `ClientContext` 而非 Action 实例，外部 `generate_image_standalone` 不再需要桩对象。
 
 ## 🔗 版权信息
 

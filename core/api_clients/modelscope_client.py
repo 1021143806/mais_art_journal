@@ -118,8 +118,18 @@ class ModelscopeClient(BaseApiClient):
                 "X-ModelScope-Task-Type": "image_generation"
             }
 
-            max_attempts = 24  # 最多检查2分钟
-            for attempt in range(max_attempts):
+            # 优化轮询策略：前期快速轮询，后期降低频率
+            # 总共最多 120 秒（2分钟）
+            max_poll_time = 120  # 最大轮询时间（秒）
+            poll_intervals = [2, 2, 3, 3, 5, 5, 5, 5, 5, 5, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10]  # 轮询间隔序列
+            start_time = time.time()
+
+            for poll_index, interval in enumerate(poll_intervals):
+                # 检查是否超时
+                if time.time() - start_time > max_poll_time:
+                    logger.error(f"{self.log_prefix} (魔搭) 任务超时（{max_poll_time}秒），未能在规定时间内完成")
+                    return False, f"任务执行超时（超过{max_poll_time}秒）"
+
                 try:
                     status_url = f"{base_url}/tasks/{task_id}"
                     check_kwargs = {
@@ -178,21 +188,21 @@ class ModelscopeClient(BaseApiClient):
 
                     elif task_status in ["PENDING", "RUNNING", "PROCESSING"]:
                         logger.info(f"{self.log_prefix} (魔搭) 任务状态: {task_status}，等待中...")
-                        time.sleep(5)
+                        time.sleep(interval)
                         continue
 
                     else:
                         logger.warning(f"{self.log_prefix} (魔搭) 未知任务状态: {task_status}")
-                        time.sleep(5)
+                        time.sleep(interval)
                         continue
 
                 except Exception as e:
                     logger.warning(f"{self.log_prefix} (魔搭) 状态检查异常: {e}")
-                    time.sleep(5)
+                    time.sleep(interval)
                     continue
 
-            logger.error(f"{self.log_prefix} (魔搭) 任务超时，未能在规定时间内完成")
-            return False, "任务执行超时"
+            logger.error(f"{self.log_prefix} (魔搭) 任务超时（{max_poll_time}秒），未能在规定时间内完成")
+            return False, f"任务执行超时（超过{max_poll_time}秒）"
 
         except Exception as e:
             logger.error(f"{self.log_prefix} (魔搭) 请求异常: {e!r}", exc_info=True)

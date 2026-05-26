@@ -1,85 +1,42 @@
 {
-  "manifest_version": 1,
+  "manifest_version": 2,
+  "version": "4.0.0",
   "name": "麦麦绘卷（Claude MAInet）",
-  "version": "3.4.0",
-  "description": "智能多模型图片生成插件，支持文生图和图生图自动识别。兼容OpenAI、OpenAI-Chat、豆包、Gemini、魔搭等多种API格式。提供命令式风格转换、模型配置管理、结果缓存、自拍负面提示词、独立生图接口等功能。支持动态模型切换、风格别名、调试开关等高级特性。",
+  "description": "基于 MaiBot 的多模型智能绘图插件。兼容 OpenAI、OpenAI-Chat、豆包（火山方舟）、Gemini、魔搭、硅基流动、砂糖云、梦羽、智谱 GLM、阿里百炼 DashScope（通义千问/万相/Z-Image/可灵）、ComfyUI 等多种 API 格式。提供命令式风格转换、自拍模式、自动自拍发说说、日程感知、模型配置管理、运行时聊天流隔离状态、对外 @API 生图接口等功能。",
   "author": {
-    "name": "Ptrel，Rabbit-Jia-Er，saberlights Kiuon",
+    "name": "Ptrel, Rabbit-Jia-Er, saberlights Kiuon",
     "url": "https://github.com/1021143806/mais_art_journal"
   },
   "license": "GPL-v3.0-or-later",
-
-  "host_application": {
-    "min_version": "0.10.0"
+  "urls": {
+    "repository": "https://github.com/1021143806/mais_art_journal",
+    "homepage": "https://github.com/1021143806/mais_art_journal",
+    "issues": "https://github.com/1021143806/mais_art_journal/issues"
   },
-  "homepage_url": "https://github.com/1021143806/mais_art_journal",
-  "repository_url": "https://github.com/1021143806/mais_art_journal",
-  "keywords": [
-    "draw",
-    "Expression",
-    "ai",
-    "image"
+  "host_application": {
+    "min_version": "1.0.0",
+    "max_version": "1.99.99"
+  },
+  "sdk": {
+    "min_version": "2.0.0",
+    "max_version": "2.99.99"
+  },
+  "dependencies": [],
+  "capabilities": [
+    "send.text",
+    "send.image",
+    "send.command",
+    "send.custom",
+    "config.get",
+    "config.get_plugin",
+    "llm.generate",
+    "message.get_by_time_in_chat",
+    "message.get_by_id",
+    "api.call"
   ],
-  "categories": [
-    "Content Generation",
-    "Multimedia"
-  ],
-  "default_locale": "zh-CN",
-  "locales_path": "_locales",
-
-  "plugin_info": {
-    "is_built_in": false,
-    "plugin_type": "image_generator",
-    "components": [
-      {
-        "type": "action",
-        "name": "draw_picture",
-        "description": "智能图片生成，自动识别文生图/图生图",
-        "activation_modes": [
-          "keyword",
-          "llm_judge"
-        ],
-        "keywords": [
-          "画",
-          "绘制",
-          "生成图片",
-          "画图",
-          "图生图",
-          "修改图片",
-          "风格转换"
-        ]
-      },
-      {
-        "type": "command",
-        "name": "pic_generation_command",
-        "description": "风格化图生图命令：/dr <风格>",
-        "pattern": "/dr"
-      },
-      {
-        "type": "command",
-        "name": "pic_config_command",
-        "description": "模型配置管理：/dr list、/dr set等",
-        "pattern": "/dr"
-      },
-      {
-        "type": "command",
-        "name": "pic_style_command",
-        "description": "风格管理：/dr styles、/dr style等",
-        "pattern": "/dr"
-      }
-    ],
-    "features": [
-      "智能文生图/图生图识别",
-      "多API格式支持(OpenAI/OpenAI-Chat/豆包/Gemini/魔搭)",
-      "命令式风格转换",
-      "动态模型配置管理",
-      "风格别名系统",
-      "结果缓存机制",
-      "调试开关控制",
-      "支持图生图开关",
-      "自拍负面提示词",
-      "独立生图接口(generate_image_standalone)"
-    ]
+  "i18n": {
+    "default_locale": "zh-CN",
+    "supported_locales": ["zh-CN"]
   },
   "id": "1021143806.mais_art_journal"
 }

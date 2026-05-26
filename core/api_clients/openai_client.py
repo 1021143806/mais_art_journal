@@ -28,8 +28,17 @@ class OpenAIClient(BaseApiClient):
         generate_api_key = model_config.get("api_key", "")
         model = model_config.get("model", "")
 
-        # 直接拼接路径
-        endpoint = f"{base_url.rstrip('/')}/images/generations"
+        # 智能拼接端点：
+        # - base_url 已含 /images/generations 或 /images/edits → 直接用
+        # - 否则在末尾拼 /images/generations
+        # 这样既支持标准 OpenAI（base_url=https://api.openai.com/v1），
+        # 也支持智谱 GLM（base_url=https://open.bigmodel.cn/api/paas/v4）、
+        # 模力方舟（base_url=https://ai.gitee.com/v1）等非 /v1 结尾的平台。
+        base = base_url.rstrip("/")
+        if base.endswith(("/images/generations", "/images/edits")):
+            endpoint = base
+        else:
+            endpoint = f"{base}/images/generations"
 
         # 获取模型特定的配置参数
         custom_prompt_add = model_config.get("custom_prompt_add", "")
@@ -122,7 +131,7 @@ class OpenAIClient(BaseApiClient):
         }
 
         # 详细调试信息
-        verbose_debug = self.action.get_config("components.enable_verbose_debug", False)
+        verbose_debug = self.ctx.get_config("basic.enable_verbose_debug", False)
         if verbose_debug:
             # 记录完整的请求payload（隐藏敏感信息）
             safe_payload = payload_dict.copy()

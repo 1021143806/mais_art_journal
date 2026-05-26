@@ -1,20 +1,21 @@
 """API客户端模块
 
 支持多种图片生成API：
-- OpenAI 格式 (OpenAI, 硅基流动, NewAPI等)
-- OpenAI Chat 格式 (通过 chat/completions 接口生图)
+- OpenAI 格式 (OpenAI, 硅基流动, NewAPI, 智谱 GLM, 模力方舟 gitee 等)
+- OpenAI Chat 格式 (通过 chat/completions 接口生图；兼容Gemini 转发代理)
 - Doubao 豆包格式
 - Gemini 格式
 - Modelscope 魔搭格式
 - Shatangyun 砂糖云格式 (NovelAI)
 - Mengyuai 梦羽AI格式
-- Zai 格式 (Gemini转发)
 - ComfyUI 格式 (本地ComfyUI工作流)
+- DashScope 阿里百炼格式 (通义千问 / 万相 / Z-Image / 可灵)
 """
 
 from typing import Dict, Any, Tuple, Optional
 
 from .base_client import BaseApiClient
+from .client_context import ClientContext, ProxyConfig, build_client_context_from_plugin, build_client_context_from_extra
 from .openai_client import OpenAIClient
 from .openai_chat_client import OpenAIChatClient
 from .doubao_client import DoubaoClient
@@ -22,11 +23,15 @@ from .gemini_client import GeminiClient
 from .modelscope_client import ModelscopeClient
 from .shatangyun_client import ShatangyunClient
 from .mengyuai_client import MengyuaiClient
-from .zai_client import ZaiClient
 from .comfyui_client import ComfyUIClient
+from .dashscope_client import DashScopeClient
 
 __all__ = [
     'BaseApiClient',
+    'ClientContext',
+    'ProxyConfig',
+    'build_client_context_from_plugin',
+    'build_client_context_from_extra',
     'OpenAIClient',
     'OpenAIChatClient',
     'DoubaoClient',
@@ -34,8 +39,8 @@ __all__ = [
     'ModelscopeClient',
     'ShatangyunClient',
     'MengyuaiClient',
-    'ZaiClient',
     'ComfyUIClient',
+    'DashScopeClient',
     'ApiClient',
     'get_client_class',
     'generate_image_standalone',
@@ -51,8 +56,8 @@ CLIENT_MAPPING = {
     'modelscope': ModelscopeClient,
     'shatangyun': ShatangyunClient,
     'mengyuai': MengyuaiClient,
-    'zai': ZaiClient,
     'comfyui': ComfyUIClient,
+    'dashscope': DashScopeClient,
 }
 
 
@@ -69,21 +74,22 @@ def get_client_class(api_format: str):
 
 
 class ApiClient:
-    """统一的API客户端包装类
+    """统一的API客户端包装类（兼容入口）
 
-    根据模型配置中的format字段自动选择正确的客户端
-    提供与BaseApiClient相同的接口
+    保留给旧 image_generation.py / command_handlers.py 使用，
+    内部接受 ClientContext 或任何 duck-typed（get_config + log_prefix）对象。
+    新代码请直接 `get_client_class(api_format)(client_ctx)`。
     """
 
-    def __init__(self, action_instance):
-        self.action = action_instance
+    def __init__(self, client_ctx):
+        self.ctx = client_ctx
         self._clients = {}  # 缓存客户端实例
 
     def _get_client(self, api_format: str):
         """获取指定格式的客户端实例（带缓存）"""
         if api_format not in self._clients:
             client_class = get_client_class(api_format)
-            self._clients[api_format] = client_class(self.action)
+            self._clients[api_format] = client_class(self.ctx)
         return self._clients[api_format]
 
     async def generate_image(
@@ -93,21 +99,8 @@ class ApiClient:
         size: str,
         strength: float = None,
         input_image_base64: str = None,
-        max_retries: int = 2
+        max_retries: int = 2,
     ):
-        """生成图片，自动选择正确的API客户端
-
-        Args:
-            prompt: 提示词
-            model_config: 模型配置（必须包含format字段）
-            size: 图片尺寸
-            strength: 图生图强度
-            input_image_base64: 输入图片的base64编码
-            max_retries: 最大重试次数
-
-        Returns:
-            (成功标志, 结果数据或错误信息)
-        """
         api_format = model_config.get("format", "openai")
         client = self._get_client(api_format)
         return await client.generate_image(
@@ -116,33 +109,8 @@ class ApiClient:
             size=size,
             strength=strength,
             input_image_base64=input_image_base64,
-            max_retries=max_retries
+            max_retries=max_retries,
         )
-
-
-class _StandaloneActionStub:
-    """独立调用时使用的 action 桩对象
-
-    提供 BaseApiClient 所需的最小接口（get_config, log_prefix），
-    不依赖真实的 Action 实例。
-    """
-
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
-        self.log_prefix = "[standalone]"
-        self._config = config or {}
-
-    def get_config(self, key: str, default=None):
-        """从扁平化 key（如 'proxy.enabled'）读取配置"""
-        parts = key.split(".")
-        obj = self._config
-        for part in parts:
-            if isinstance(obj, dict):
-                obj = obj.get(part)
-            else:
-                return default
-            if obj is None:
-                return default
-        return obj
 
 
 async def generate_image_standalone(
@@ -155,9 +123,9 @@ async def generate_image_standalone(
     max_retries: int = 2,
     extra_config: Optional[Dict[str, Any]] = None,
 ) -> Tuple[bool, str]:
-    """独立的图片生成接口，不依赖 Action 实例
+    """独立的图片生成接口，不依赖 Action / Plugin 实例
 
-    供外部插件（如 Maizone）直接调用，只做图片生成，不发送消息。
+    供外部插件（如 MaiTrace）或 AutoSelfieTask 直接调用，只做图片生成、不发送消息。
 
     Args:
         prompt: 提示词
@@ -172,22 +140,21 @@ async def generate_image_standalone(
     Returns:
         (success, image_data): success 为 True 时 image_data 是 base64 或 URL
     """
-    from src.common.logger import get_logger
+    import logging
     from ..utils import merge_negative_prompt
-    _logger = get_logger("mais_art.standalone")
+    _logger = logging.getLogger("plugin.mais_art_journal.standalone")
 
-    # 合并负面提示词
     merged_config = merge_negative_prompt(model_config, negative_prompt) if negative_prompt else model_config
 
-    # 创建桩对象
-    stub = _StandaloneActionStub(config=extra_config)
-
-    # 获取客户端
+    client_ctx = build_client_context_from_extra(extra_config, log_prefix="[standalone]")
     api_format = merged_config.get("format", "openai")
     client_class = get_client_class(api_format)
-    client = client_class(stub)
+    client = client_class(client_ctx)
 
-    _logger.info(f"[standalone] 独立生图: format={api_format}, model={merged_config.get('model', '?')}, size={size}")
+    _logger.info(
+        f"[standalone] 独立生图: format={api_format}, "
+        f"model={merged_config.get('model', '?')}, size={size}"
+    )
 
     try:
         success, result = await client.generate_image(
@@ -206,3 +173,4 @@ async def generate_image_standalone(
     except Exception as e:
         _logger.error(f"[standalone] 生图异常: {e!r}")
         return False, f"独立生图异常: {str(e)[:100]}"
+
