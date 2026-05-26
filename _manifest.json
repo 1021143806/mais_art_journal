@@ -2,7 +2,7 @@
   "manifest_version": 2,
   "version": "4.0.0",
   "name": "麦麦绘卷（Claude MAInet）",
-  "description": "智能多模型图片生成插件，支持文生图和图生图自动识别。兼容 OpenAI、OpenAI-Chat、豆包（火山方舟）、Gemini、魔搭、硅基流动、砂糖云、梦羽、智谱 GLM、阿里百炼 DashScope（通义千问/万相/Z-Image/可灵）、ComfyUI 等多种 API 格式。提供命令式风格转换、自拍模式、自动自拍发说说（对接 MaiTrace）、日程感知（对接 autonomous_planning）、模型配置管理、运行时聊天流隔离状态、对外 @API 生图接口等功能。SDK 2.x Pipeline + 装饰器子命令架构。",
+  "description": "基于 MaiBot 的多模型智能绘图插件。兼容 OpenAI、OpenAI-Chat、豆包（火山方舟）、Gemini、魔搭、硅基流动、砂糖云、梦羽、智谱 GLM、阿里百炼 DashScope（通义千问/万相/Z-Image/可灵）、ComfyUI 等多种 API 格式。提供命令式风格转换、自拍模式、自动自拍发说说、日程感知、模型配置管理、运行时聊天流隔离状态、对外 @API 生图接口等功能。",
   "author": {
     "name": "Ptrel, Rabbit-Jia-Er, saberlights Kiuon",
     "url": "https://github.com/1021143806/mais_art_journal"
