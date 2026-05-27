@@ -31,7 +31,7 @@ async def cmd_styles(plugin: "MaisArtPlugin", dctx: "DispatcherContext", args: s
         alias_list = [a.strip() for a in aliases_raw.split(",") if a.strip()] if aliases_raw else []
         alias_text = f" (别名: {', '.join(alias_list)})" if alias_list else ""
         lines.append(f"• {name}{alias_text}")
-    lines.append("\n💡 使用方法: /dr <风格名>")
+    lines.append(f"\n💡 使用方法: {dctx.prefix} <风格名>")
 
     await plugin.ctx.send.text("\n".join(lines), dctx.stream_id)
     return True, "风格列表查询成功", True
@@ -42,20 +42,20 @@ async def cmd_style(plugin: "MaisArtPlugin", dctx: "DispatcherContext", args: st
     """/dr style <风格名> — 显示风格详情"""
     style_name = (args or "").strip()
     if not style_name:
-        await plugin.ctx.send.text("请指定风格名，格式：/dr style <风格名>", dctx.stream_id)
+        await plugin.ctx.send.text(f"请指定风格名，格式：{dctx.prefix} style <风格名>", dctx.stream_id)
         return False, "缺少风格名参数", True
 
     actual = resolve_style_alias(plugin, style_name)
     if not actual:
         await plugin.ctx.send.text(
-            f"风格 '{style_name}' 不存在，请使用 /dr styles 查看可用风格", dctx.stream_id,
+            f"风格 '{style_name}' 不存在，请使用 {dctx.prefix} styles 查看可用风格", dctx.stream_id,
         )
         return False, f"风格 '{style_name}' 不存在", True
 
     style_prompt = get_style_prompt(plugin, actual)
     if not style_prompt:
         await plugin.ctx.send.text(
-            f"风格 '{style_name}' 不存在，请使用 /dr styles 查看可用风格", dctx.stream_id,
+            f"风格 '{style_name}' 不存在，请使用 {dctx.prefix} styles 查看可用风格", dctx.stream_id,
         )
         return False, f"风格 '{style_name}' 不存在", True
 
@@ -77,7 +77,7 @@ async def cmd_style(plugin: "MaisArtPlugin", dctx: "DispatcherContext", args: st
         lines.append(f"🏷️ 别名: {', '.join(aliases)}\n")
     lines.extend([
         "💡 使用方法：",
-        f"/dr {style_name}",
+        f"{dctx.prefix} {style_name}",
         "\n⚠️ 注意：需要先发送一张图片作为输入",
     ])
     await plugin.ctx.send.text("\n".join(lines), dctx.stream_id)

@@ -376,7 +376,7 @@ class MaisArtPlugin(MaiBotPlugin):
     @Command(
         "dr",
         description="麦麦绘卷命令套件（生图 / 模型管理 / 风格管理 / 自拍开关）。命令前缀可在「基础配置.命令前缀」修改后重启 MaiBot 生效",
-        pattern=r"(?:.*，说：\s*)?/dr(?:\s+(?P<rest>.+))?$",
+        pattern=r"^(?:.*，说：\s*)?/dr(?:\s+(?P<rest>.+))?$",
     )
     async def handle_dr(self, **kwargs: Any):
         """命令入口：实际 pattern 由 get_components() 按 config.basic.command_prefix 动态注入
@@ -437,7 +437,10 @@ class MaisArtPlugin(MaiBotPlugin):
         if not prefix.startswith("/"):
             prefix = "/" + prefix
         escaped = re.escape(prefix)
-        new_pattern = rf"(?:.*，说：\s*)?{escaped}(?:\s+(?P<rest>.+))?$"
+        # 必须 ^ 锚定起始：MaiBot host 用的是 re.search 而不是 re.match，
+        # 没有 ^ 锚的话，任何文本末尾长得像 "<prefix> xxx" 的消息（包括别的 bot 的
+        # 帮助文本）都会被吃中。
+        new_pattern = rf"^(?:.*，说：\s*)?{escaped}(?:\s+(?P<rest>.+))?$"
 
         for comp in components:
             if (

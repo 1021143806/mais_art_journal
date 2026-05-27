@@ -36,12 +36,12 @@ async def cmd_model(plugin: "MaisArtPlugin", dctx: "DispatcherContext", args: st
     """/dr model on|off <模型ID>"""
     parts = args.split(maxsplit=1)
     if len(parts) < 2:
-        await plugin.ctx.send.text("格式：/dr model on|off <模型ID>", dctx.stream_id)
+        await plugin.ctx.send.text(f"格式：{dctx.prefix} model on|off <模型ID>", dctx.stream_id)
         return False, "参数不足", True
 
     action, model_id = parts[0].lower(), parts[1].strip()
     if action not in ("on", "off"):
-        await plugin.ctx.send.text("格式：/dr model on|off <模型ID>", dctx.stream_id)
+        await plugin.ctx.send.text(f"格式：{dctx.prefix} model on|off <模型ID>", dctx.stream_id)
         return False, "无效的操作", True
 
     if not get_model_config(plugin, model_id):
@@ -60,12 +60,12 @@ async def cmd_recall(plugin: "MaisArtPlugin", dctx: "DispatcherContext", args: s
     """/dr recall on|off <模型ID>"""
     parts = args.split(maxsplit=1)
     if len(parts) < 2:
-        await plugin.ctx.send.text("格式：/dr recall on|off <模型ID>", dctx.stream_id)
+        await plugin.ctx.send.text(f"格式：{dctx.prefix} recall on|off <模型ID>", dctx.stream_id)
         return False, "参数不足", True
 
     action, model_id = parts[0].lower(), parts[1].strip()
     if action not in ("on", "off"):
-        await plugin.ctx.send.text("格式：/dr recall on|off <模型ID>", dctx.stream_id)
+        await plugin.ctx.send.text(f"格式：{dctx.prefix} recall on|off <模型ID>", dctx.stream_id)
         return False, "无效的操作", True
 
     if not get_model_config(plugin, model_id):

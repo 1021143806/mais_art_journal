@@ -56,7 +56,8 @@ async def handle_generate(plugin: "MaisArtPlugin", dctx: "DispatcherContext", co
     """fallback 入口：先尝试风格，否则按自然语言"""
     if not content:
         await plugin.ctx.send.text(
-            "请指定风格或描述，格式：/dr <风格> 或 /dr <描述>\n可用：/dr styles 查看风格列表",
+            f"请指定风格或描述，格式：{dctx.prefix} <风格> 或 {dctx.prefix} <描述>\n"
+            f"可用：{dctx.prefix} styles 查看风格列表",
             dctx.stream_id,
         )
         return False, "缺少内容参数", True
@@ -78,7 +79,9 @@ async def handle_generate(plugin: "MaisArtPlugin", dctx: "DispatcherContext", co
         logger.info(f"{dctx.log_prefix} 识别为自然语言模式: {content}")
         return await _execute_natural_mode(plugin, dctx, content)
 
-    await plugin.ctx.send.text(f"风格 '{content}' 不存在，使用 /dr styles 查看所有风格", dctx.stream_id)
+    await plugin.ctx.send.text(
+        f"风格 '{content}' 不存在，使用 {dctx.prefix} styles 查看所有风格", dctx.stream_id,
+    )
     return False, f"风格 '{content}' 不存在", True
 
 

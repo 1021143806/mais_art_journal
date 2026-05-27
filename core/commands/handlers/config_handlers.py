@@ -50,7 +50,7 @@ async def cmd_list(plugin: "MaisArtPlugin", dctx: "DispatcherContext", args: str
             f"• {model_id}{default_mark}{command_mark}{img2img_mark}{disabled_mark}{recall_mark}\n"
             f"  模型: {model_name}\n"
         )
-    lines.append("\n📖 图例：✅默认 🔧/dr命令 🖼️图生图 📝仅文生图")
+    lines.append(f"\n📖 图例：✅默认 🔧{dctx.prefix}命令 🖼️图生图 📝仅文生图")
     await plugin.ctx.send.text("\n".join(lines), dctx.stream_id)
     return True, "模型列表查询成功", True
 
@@ -66,11 +66,13 @@ async def cmd_set(plugin: "MaisArtPlugin", dctx: "DispatcherContext", args: str)
     """/dr set <模型ID> — 设置 /dr 命令使用的模型"""
     model_id = args.strip()
     if not model_id:
-        await plugin.ctx.send.text("请指定模型ID，格式：/dr set <模型ID>", dctx.stream_id)
+        await plugin.ctx.send.text(f"请指定模型ID，格式：{dctx.prefix} set <模型ID>", dctx.stream_id)
         return False, "缺少模型ID参数", True
 
     if not model_exists(plugin, model_id):
-        await plugin.ctx.send.text(f"模型 '{model_id}' 不存在，请使用 /dr list 查看可用模型", dctx.stream_id)
+        await plugin.ctx.send.text(
+            f"模型 '{model_id}' 不存在，请使用 {dctx.prefix} list 查看可用模型", dctx.stream_id,
+        )
         return False, f"模型 '{model_id}' 不存在", True
 
     if not runtime_state.is_model_enabled(dctx.chat_id, model_id):
@@ -87,7 +89,7 @@ async def cmd_default(plugin: "MaisArtPlugin", dctx: "DispatcherContext", args: 
     """/dr default <模型ID> — 设置 Action 组件默认模型"""
     model_id = args.strip()
     if not model_id:
-        await plugin.ctx.send.text("格式：/dr default <模型ID>", dctx.stream_id)
+        await plugin.ctx.send.text(f"格式：{dctx.prefix} default <模型ID>", dctx.stream_id)
         return False, "缺少模型ID", True
 
     if not model_exists(plugin, model_id):
@@ -113,10 +115,10 @@ async def cmd_reset(plugin: "MaisArtPlugin", dctx: "DispatcherContext", args: st
     await plugin.ctx.send.text(
         f"✅ 当前聊天流配置已重置！\n\n"
         f"🎯 默认模型: {global_action_model}\n"
-        f"🔧 /dr命令模型: {global_command_model}\n"
+        f"🔧 {dctx.prefix}命令模型: {global_command_model}\n"
         f"📋 所有模型已启用\n"
         f"🔔 所有撤回已启用\n\n"
-        f"使用 /dr config 查看当前配置",
+        f"使用 {dctx.prefix} config 查看当前配置",
         dctx.stream_id,
     )
     logger.info(f"聊天流 {dctx.chat_id} 配置已重置")
