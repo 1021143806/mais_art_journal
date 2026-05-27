@@ -1,11 +1,11 @@
 """请求级上下文适配器
 
-替代旧版 BaseAction/BaseCommand 在 helper 模块中的 self.action 角色：
+替代旧版 BaseCommand 在 helper 模块中的 self.action 角色：
 - 把 plugin.get_plugin_config_data() 的嵌套字典包装为 get_config(key, default)
 - 暴露 plugin.ctx（PluginContext）和 log_prefix
-- 兼容 ImageProcessor 等 helper 期望的 message / action_message 字段
+- 提供 ImageProcessor 等 helper 期望的 message 字段
 
-每次 Action/Command 触发时由插件入口构造，传给 ImageProcessor/CacheManager/BaseApiClient 等 helper。
+每次 Tool/Command 触发时由插件入口构造，传给 ImageProcessor/CacheManager/BaseApiClient 等 helper。
 """
 from __future__ import annotations
 
@@ -17,22 +17,19 @@ if TYPE_CHECKING:
 
 
 class RequestContext:
-    """组件请求上下文（替代旧 BaseAction/BaseCommand 实例）"""
+    """组件请求上下文（替代旧 BaseCommand 实例）"""
 
     def __init__(
         self,
         plugin: "MaiBotPlugin",
         *,
         log_prefix: str = "",
-        action_message: Any = None,
         command_message: Any = None,
         chat_id: str = "",
         stream_id: str = "",
     ):
         self.plugin = plugin
         self.log_prefix = log_prefix
-        # 兼容 ImageProcessor 旧逻辑：Action 走 action_message，Command 走 message
-        self.action_message = action_message
         self.message = command_message
         self.chat_id = chat_id
         self.stream_id = stream_id or chat_id

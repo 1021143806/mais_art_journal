@@ -8,7 +8,7 @@
 - build_standalone_pipeline()        generate_image_standalone 内部备用
 
 辅助：
-- build_request_from_action_kwargs   把 @Tool 注入的 kwargs 解析成 GenerationRequest
+- build_request_from_tool_kwargs    把 @Tool 注入的 kwargs 解析成 GenerationRequest
 - make_pipeline_context              构造 PipelineContext（cache / image_processor / client_factory / request_ctx）
 """
 from __future__ import annotations
@@ -155,7 +155,6 @@ def make_pipeline_context(plugin: "MaisArtPlugin", req: GenerationRequest) -> Pi
     request_ctx = RequestContext(
         plugin,
         log_prefix=req.log_prefix,
-        action_message=req.action_message,
         command_message=req.command_message,
         chat_id=req.chat_id,
         stream_id=req.stream_id,
@@ -190,17 +189,11 @@ def _arg_get(kwargs: Dict[str, Any], key: str, default: Any = None) -> Any:
     """从 Tool kwargs 顶层取参数；空字符串视为缺失。
 
     SDK 2.x 的 @Tool 把 function_args 直接展开成 kwargs（含 stream_id/chat_id 等
-    上下文）。本函数兼容遗留场景：若 kwargs 含 ``action_data`` dict（旧 @Action
-    路径 / standalone 自构调用），也会兜底从中取一次。
+    上下文）。
     """
     val = kwargs.get(key)
     if val not in (None, ""):
         return val
-    action_data = kwargs.get("action_data")
-    if isinstance(action_data, dict):
-        ad_val = action_data.get(key)
-        if ad_val not in (None, ""):
-            return ad_val
     return default
 
 
@@ -238,16 +231,18 @@ def _load_selfie_reference_image(plugin: "MaisArtPlugin", log_prefix: str) -> Op
         return None
 
 
-async def build_request_from_action_kwargs(
+async def build_request_from_tool_kwargs(
     plugin: "MaisArtPlugin",
     kwargs: Dict[str, Any],
 ) -> Optional[GenerationRequest]:
     """从 @Tool 注入的 kwargs 构造 GenerationRequest
 
     SDK 2.x 下 host 调用 Tool 时把 function_args 平铺进 kwargs，并附带
-    stream_id / chat_id / group_id / user_id / platform 上下文字段；
-    不再有 action_data dict、action_message、processed_plain_text 等 Action
-    时代的字段。
+    stream_id / chat_id / group_id / user_id / platform 等上下文字段。
+    host 不会自动注入触发消息 id——但 LLM 看得到 chat history 里每条用户消息的
+    <message msg_id="..."> 前缀，因此插件在 Tool schema 里声明 msg_id 参数，
+    LLM 调用时会自动把"触发本次工具调用的那条用户消息 id"填进来。
+    据此即可 100% 锁定原始消息，支持图生图——见 ImageProcessor.fetch_image_by_triggering_id。
 
     返回 None 表示早退（插件被禁用 / 描述为空 / 模型禁用等已外层处理过的场景），
     调用方应直接返回 (False, msg)。
@@ -262,7 +257,7 @@ async def build_request_from_action_kwargs(
         logger.info(f"{log_prefix} 插件在当前聊天流已禁用")
         return None  # 静默跳过
 
-    # 提取参数（Tool 路径直接从 kwargs 取；兼容老 action_data）
+    # 提取参数（Tool 路径直接从 kwargs 取）
     description = str(_arg_get(kwargs, "description", "") or "").strip()
     model_id = str(_arg_get(kwargs, "model_id", "") or "").strip()
     strength_raw = _arg_get(kwargs, "strength", 0.7)
@@ -306,7 +301,10 @@ async def build_request_from_action_kwargs(
     except (ValueError, TypeError):
         strength = 0.7
 
-    # 输入图：自拍模式可能用参考图；其他模式从最近消息历史检测
+    # 输入图：
+    # - 自拍模式：可用本地参考图（图生图自拍）
+    # - 非自拍模式：依据 host 注入的 triggering_message_id 锁定触发消息抓图，
+    #   有图 → 图生图；没图（包括框架未注入字段）→ 文生图。
     input_image_base64: Optional[str] = None
     silent_fallback = False
     activity_scene: Optional[Dict[str, Any]] = None
@@ -342,13 +340,18 @@ async def build_request_from_action_kwargs(
             if strength is None or strength > 0.6:
                 strength = 0.6
     else:
-        # 普通模式：从最近消息历史检测一张图（ImageProcessor 内部走 ctx.message 系列）
-        request_ctx = RequestContext(
-            plugin, log_prefix=log_prefix,
-            chat_id=chat_id, stream_id=stream_id,
-        )
-        image_processor = ImageProcessor(request_ctx)
-        input_image_base64 = await image_processor.get_recent_image()
+        triggering_msg_id = str(_arg_get(kwargs, "msg_id", "") or "").strip()
+        if triggering_msg_id:
+            request_ctx = RequestContext(
+                plugin, log_prefix=log_prefix,
+                chat_id=chat_id, stream_id=stream_id,
+            )
+            image_processor = ImageProcessor(request_ctx)
+            input_image_base64 = await image_processor.fetch_image_by_triggering_id(
+                triggering_msg_id,
+            )
+        else:
+            logger.debug(f"{log_prefix} LLM 未填 msg_id 参数，跳过图生图检测")
 
     is_img2img = input_image_base64 is not None
     if not is_img2img:
@@ -372,5 +375,5 @@ async def build_request_from_action_kwargs(
         stream_id=stream_id,
         chat_id=chat_id,
         log_prefix=log_prefix,
-        source="action",
+        source="tool",
     )

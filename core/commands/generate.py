@@ -115,7 +115,10 @@ async def _execute_style_mode(
     image_processor = ImageProcessor(request_ctx)
     input_image = await image_processor.get_recent_image()
     if not input_image:
-        await plugin.ctx.send.text("请先发送图片", stream_id)
+        await plugin.ctx.send.text(
+            "请引用包含图片的消息，或在 /dv 命令同条消息中附上图片",
+            stream_id,
+        )
         return False, "未找到输入图片", True
 
     if not model_cfg.get("support_img2img", True):

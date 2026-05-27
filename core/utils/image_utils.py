@@ -1,9 +1,6 @@
-import asyncio
 import base64
-import time as time_module
 import urllib.request
 import traceback
-import re
 import logging
 from typing import Any, Optional, Tuple, List
 
@@ -11,20 +8,15 @@ from maim_message import Seg
 
 logger = logging.getLogger("plugin.mais_art_journal.image")
 
-# 历史图片回溯窗口（秒）：用户先发图、再发命令时的最大时间间隔
-_RECENT_IMAGE_LOOKBACK_SECONDS = 10 * 60
-# 单次最多扫描多少条最近消息
-_RECENT_IMAGE_SCAN_LIMIT = 20
-
 
 class ImageProcessor:
     """图片处理工具类
 
     构造时接收 RequestContext（或鸭子类型），需要：
     - log_prefix
-    - 可选：message / action_message（兼容老用法）
-    - 可选：ctx（PluginContext，启用基于 capability 的图片回溯）
-    - 可选：chat_id（启用历史消息扫描）
+    - 可选：message（Command 路径触发消息 dict；Tool 路径为 None）
+    - 可选：ctx（PluginContext，用于 get_by_id 回拉 reply 目标消息）
+    - 可选：chat_id（用于 get_by_id 时定位会话）
     """
 
     def __init__(self, action_instance):
@@ -37,11 +29,8 @@ class ImageProcessor:
 
     @staticmethod
     def _current_message_obj(action: Any) -> Any:
-        """优先返回 command 形态的 message，否则返回 action_message"""
-        msg = getattr(action, "message", None)
-        if msg is not None:
-            return msg
-        return getattr(action, "action_message", None)
+        """返回 command 路径的触发消息 dict；Tool 路径无 message 时为 None"""
+        return getattr(action, "message", None)
 
     def _extract_image_from_current_dict(self, message: dict) -> Optional[str]:
         """从 SDK 2.x RPC 序列化的 dict 消息里直接抓 base64
@@ -128,35 +117,54 @@ class ImageProcessor:
             return None
         return self._scan_raw_for_binary(full.get("raw_message"))
 
-    async def _fetch_image_from_recent(self) -> Optional[str]:
-        """扫描最近聊天历史，回找最近一张图片"""
-        if self._ctx is None or not self._chat_id:
+    async def fetch_image_by_triggering_id(
+        self,
+        triggering_message_id: Optional[str],
+    ) -> Optional[str]:
+        """Tool 路径专用：依据 LLM 透传的 msg_id 100% 锁定触发消息抓图。
+
+        查找顺序：
+        1. 触发消息自身含 image/emoji 段 → 直接返回
+        2. 触发消息含 reply（看 reply_to 快捷字段，缺则扫 raw_message 的 reply 段）
+           → 拉被引用消息再抓图
+        """
+        if self._ctx is None or not triggering_message_id:
             return None
+
         try:
-            now = time_module.time()
-            messages = await self._ctx.message.get_by_time_in_chat(
-                chat_id=self._chat_id,
-                start_time=now - _RECENT_IMAGE_LOOKBACK_SECONDS,
-                end_time=now + 1,
-                limit=_RECENT_IMAGE_SCAN_LIMIT,
-                limit_mode="latest",
+            message = await self._ctx.message.get_by_id(
+                message_id=triggering_message_id,
+                chat_id=self._chat_id or "",
                 include_binary_data=True,
-                filter_mai=True,
             )
         except Exception as e:
-            logger.debug(f"{self.log_prefix} get_by_time_in_chat 失败: {e}")
+            logger.debug(f"{self.log_prefix} get_by_id 失败 ({triggering_message_id}): {e}")
+            return None
+        if not isinstance(message, dict):
             return None
 
-        if not isinstance(messages, list):
-            return None
+        b64 = self._scan_raw_for_binary(message.get("raw_message"))
+        if b64:
+            logger.info(f"{self.log_prefix} 触发消息含图，按 msg_id 直接命中")
+            return b64
 
-        # 倒序遍历（最新在前），找第一张含 binary 的图
-        for msg in reversed(messages):
-            if not isinstance(msg, dict):
-                continue
-            b64 = self._scan_raw_for_binary(msg.get("raw_message"))
-            if b64:
-                return b64
+        target_id = str(message.get("reply_to") or "").strip()
+        if not target_id:
+            for seg in message.get("raw_message") or []:
+                if not isinstance(seg, dict):
+                    continue
+                if str(seg.get("type") or "").lower() != "reply":
+                    continue
+                data = seg.get("data") or {}
+                if isinstance(data, dict):
+                    target_id = str(data.get("target_message_id") or "").strip()
+                if target_id:
+                    break
+
+        if target_id:
+            logger.info(f"{self.log_prefix} 触发消息引用了 {target_id}，拉被引用消息取图")
+            return await self._fetch_image_by_message_id(target_id)
+
         return None
 
     @staticmethod
@@ -178,24 +186,27 @@ class ImageProcessor:
     # ==================== 主入口 ====================
 
     async def get_recent_image(self) -> Optional[str]:
-        """获取最近的图片（base64 字符串），找不到返回 None
+        """严格模式：仅从触发消息本身解析图片（base64），找不到返回 None。
 
         查找顺序：
-        1. 当前消息（command 形态 dict / 老对象形态）中直接含 base64 的图片段
-        2. 当前消息内的图片 hash → 通过 ctx.message.get_by_id 回填
-        3. 当前消息引用的目标消息 → 通过 ctx.message.get_by_id 拉图
-        4. 最近 10 分钟内的聊天历史里最近一张图片
+        1. 当前消息含 image/emoji 段（直接 base64 或 hash → get_by_id 回填）
+        2. 当前消息含 reply 段 → 拉被引用消息取图
+
+        不再扫描聊天历史——LLM Tool 路径 SDK 未暴露触发 message_id，无法 100% 定位用户消息；
+        命令路径直接走 dctx.message。
         """
         try:
             message = self._current_message_obj(self.action)
 
-            # 1) 当前消息
+            if message is None:
+                logger.info(f"{self.log_prefix} 无触发消息上下文（Tool 路径），跳过图生图检测")
+                return None
+
             if isinstance(message, dict):
                 hit = self._extract_image_from_current_dict(message)
                 if hit and not hit.startswith(("hash::", "reply::")):
                     logger.info(f"{self.log_prefix} 从当前消息段直接取到图片（{len(hit)} bytes b64）")
                     return hit
-                # hash:: → 没法直接通过 hash 查图，但 get_by_id 拉同一条消息再带 binary
                 if hit and hit.startswith("hash::"):
                     msg_id = message.get("message_id")
                     h = hit.removeprefix("hash::")
@@ -211,18 +222,12 @@ class ImageProcessor:
                     if refetched:
                         return refetched
                     logger.warning(f"{self.log_prefix} 被引用消息 {target_id} 取图失败")
-            elif message is not None:
+            else:
                 hit = self._extract_image_from_legacy_seg(message)
                 if hit:
                     return hit
 
-            # 2) 最近聊天历史
-            from_recent = await self._fetch_image_from_recent()
-            if from_recent:
-                logger.info(f"{self.log_prefix} 从最近聊天历史中取到图片")
-                return from_recent
-
-            logger.info(f"{self.log_prefix} 未找到可用的图片")
+            logger.info(f"{self.log_prefix} 触发消息中未找到图片，走文生图")
             return None
 
         except Exception as e:

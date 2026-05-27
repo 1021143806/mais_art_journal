@@ -42,7 +42,7 @@ class SendImage(BaseStep):
             return StepResult.fail(error="发送图片返回 falsy", user_message="图片已处理完成，但发送失败了")
 
         mode_text = "图生图" if req.is_img2img else "文生图"
-        if req.debug_info and not req.cache_hit and req.source in ("action", "cmd_style", "cmd_natural"):
+        if req.debug_info and not req.cache_hit and req.source in ("tool", "cmd_style", "cmd_natural"):
             try:
                 await ctx.plugin.ctx.send.text(f"{mode_text}完成！", req.stream_id)
             except Exception as e:

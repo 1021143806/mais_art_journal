@@ -1,6 +1,6 @@
 """贯穿图片生成流水线的请求对象。
 
-每次生图调用（Action / Command 风格 / Command 自然语言 / 自动自拍 / 独立接口）
+每次生图调用（Tool / Command 风格 / Command 自然语言 / 自动自拍 / 独立接口）
 都会构造一个 GenerationRequest，沿着 Pipeline 的 14 个 Step 流转，
 中间状态共享在同一对象上，行为开关控制每个 Step 是否短路。
 """
@@ -11,9 +11,9 @@ from typing import Any, Dict, Literal, Optional
 
 
 SourceLiteral = Literal[
-    "action",        # @Action draw_picture 智能生图
-    "cmd_style",     # /dr <风格名>
-    "cmd_natural",   # /dr <自然语言描述>
+    "tool",          # @Tool draw_picture 智能生图
+    "cmd_style",     # /dv <风格名>
+    "cmd_natural",   # /dv <自然语言描述>
     "auto_selfie",   # 自动自拍后台任务
     "standalone",    # generate_image_standalone 外部调用
 ]
@@ -51,9 +51,8 @@ class GenerationRequest:
     stream_id: str = ""
     chat_id: str = ""
     log_prefix: str = "[MaisArt]"
-    action_message: Any = None
     command_message: Any = None
-    source: SourceLiteral = "action"
+    source: SourceLiteral = "tool"
 
     # ==================== 中间状态（Step 间共享） ====================
     resolved_model_config: Optional[Dict[str, Any]] = None

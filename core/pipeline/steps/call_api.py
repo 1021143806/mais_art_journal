@@ -28,7 +28,7 @@ class CallApi(BaseStep):
 
         plugin = ctx.plugin
 
-        if req.debug_info and req.stream_id and req.source in ("action", "cmd_style", "cmd_natural"):
+        if req.debug_info and req.stream_id and req.source in ("tool", "cmd_style", "cmd_natural"):
             mode_text = "图生图" if req.is_img2img else "文生图"
             model_name = req.resolved_model_config.get("model", "default-model")
             try:

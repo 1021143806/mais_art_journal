@@ -12,7 +12,6 @@
   - 优先使用 LLM 生成风格感知的手部动作，失败时回退到风格专属动作池
   - 支持日程活动增强场景（需 autonomous_planning 插件）
   - 可配置参考图进行图生图
-  - 支持横版和竖版（由模型配置的 `default_size` 决定）
 - **提示词优化**: 自动将中文描述优化为专业英文 SD 提示词（自拍模式仅优化场景，不干扰角色外观）
 - **结果缓存**: 相同参数复用之前的结果
 - **自动撤回**: 可按模型配置延时撤回（使用 NapCat 官方 API）
@@ -42,7 +41,7 @@
 | `/dr list` | 列出所有模型 |
 | `/dr config` | 显示当前聊天流配置 |
 | `/dr set <模型ID>` | 设置 /dr 命令使用的模型 |
-| `/dr default <模型ID>` | 设置 Action 组件默认模型 |
+| `/dr default <模型ID>` | 设置智能生图 Tool 默认模型 |
 | `/dr model on\|off <模型ID>` | 开关指定模型 |
 | `/dr recall on\|off <模型ID>` | 开关指定模型的撤回 |
 | `/dr on` / `/dr off` | 开关插件（当前聊天流） |
@@ -86,7 +85,7 @@
 | `modelscope` | 魔搭社区 | 异步任务模式，自动轮询结果 |
 | `dashscope` | 阿里百炼 DashScope | 支持通义千问/万相/Z-Image/可灵等模型 |
 | `shatangyun` | 砂糖云 (NovelAI) | GET 请求，URL 参数传递 |
-| `mengyuai` | 梦羽 AI | 不支持图生图（须设 `support_img2img = false`） |
+| `mengyuai` | 梦羽 AI | 支持图生图（默认走 Qwen Image Edit，可通过 `img2img_model_index` 切换） |
 | `comfyui` | 本地 ComfyUI | 加载工作流 JSON，替换占位符，轮询结果（支持代理配置） |
 
 ---
@@ -118,43 +117,108 @@
 ```toml
 [plugin]
 enabled = true                    # 启用插件
+config_version = "4.2.0"          # 主程序版本识别，请勿改
 
-[generation]
-default_model = "model1"          # Action 组件默认使用的模型 ID
-
-[components]
-enable_unified_generation = true  # 启用智能生图 Action
+[basic]
+command_prefix = "/dr"            # 命令前缀，可改 /dv、/draw 等，必须以 / 开头
+default_model = "model1"          # 智能生图 Tool 默认使用的模型 ID
+enable_unified_generation = true  # 启用智能生图 Tool（draw_picture）
 enable_pic_command = true         # 启用 /dr 图片生成命令
 enable_pic_config = true          # 启用 /dr 配置管理命令
 enable_pic_style = true           # 启用 /dr 风格管理命令
 pic_command_model = "model1"      # /dr 命令默认模型（可通过 /dr set 动态切换）
 admin_users = ["12345"]           # 管理员 QQ 号列表（字符串格式）
 max_retries = 2                   # API 失败重试次数
-enable_debug_info = false         # 显示调试信息
-enable_verbose_debug = false      # 打印完整请求/响应报文
+enable_debug_info = false         # 在聊天中显示生成进度等调试信息
+enable_verbose_debug = false      # 打印完整 API 请求/响应到日志
+cache_enabled = true              # 启用结果缓存
+cache_max_size = 10               # 最大缓存数量
+auto_recall_enabled = false       # 自动撤回总开关（还需在模型配置里设 auto_recall_delay > 0）
+prompt_optimizer_enabled = true   # 使用 MaiBot LLM 优化提示词
+llm_task_name = "utils"           # 辅助 LLM 任务名：utils / replyer / planner / memory / learner
 ```
 
-### 模型配置
+### 自拍配置（合并了"自拍模式 + 自动自拍"）
 
 ```toml
-[models.model1]
-name = "我的模型"                          # 显示名称
-base_url = "https://api.siliconflow.cn/v1" # API 地址
-api_key = "Bearer sk-xxx"                  # API 密钥（统一 Bearer 格式）
-format = "openai"                          # API 格式
-model = "Kwai-Kolors/Kolors"               # 模型标识
-fixed_size_enabled = false                 # 固定尺寸（关闭=LLM 自动选）
-default_size = "1024x1024"                 # 默认尺寸
-seed = 42                                  # 随机种子（-1=随机）
-guidance_scale = 2.5                       # 引导强度
-num_inference_steps = 20                   # 推理步数
-custom_prompt_add = ", best quality"       # 追加正面提示词
-negative_prompt_add = "lowres, bad anatomy" # 追加负面提示词
-support_img2img = true                     # 是否支持图生图（请自行判断）
-auto_recall_delay = 0                      # 自动撤回延时（秒），0=不撤回
+[selfie]
+enabled = true                    # 启用自拍模式
+reference_image_path = ""         # 参考图路径（留空=纯文生图，配置后自动图生图）
+prompt_prefix = "blue hair, red eyes, 1girl"  # Bot 外观描述
+negative_prompt = ""              # 额外负面提示词（自动附加手部质量负面提示词）
+schedule_enabled = true           # 日程增强（需 autonomous_planning），可通过 /dr selfie on|off 按聊天流覆盖
+default_style = "standard"        # 默认风格: standard / mirror / photo，可通过 /dr selfie standard|mirror|photo 按聊天流覆盖
+
+# 以下 auto_ 前缀字段属于自动自拍
+auto_enabled = false              # 启用自动自拍（需 MaiTrace + autonomous_planning）
+interval_minutes = 120            # 自拍间隔（分钟）
+selfie_model = "model1"           # 自动自拍使用的模型 ID
+quiet_hours_start = "00:00"       # 安静时段开始（HH:MM），此时段不发自拍
+quiet_hours_end = "07:00"         # 安静时段结束
+caption_enabled = true            # 是否生成配文
 ```
 
-添加更多模型：复制 `[models.model1]` 整节，改名为 `model2`、`model3` 等。
+### 代理设置
+
+```toml
+[proxy]
+enabled = false                   # 启用代理（所有 API 请求经代理）
+url = "http://127.0.0.1:7890"     # 支持 HTTP / HTTPS / SOCKS5
+timeout = 60                      # 代理连接超时（秒）
+```
+
+### 风格配置（数组结构，可在 WebUI 增删）
+
+```toml
+[[styles.items]]
+name = "cartoon"                  # 英文名（命令引用，不可重复）
+aliases = "卡通,动漫"              # 中文别名，逗号分隔，可留空
+prompt = "cartoon style, anime style, colorful, vibrant colors, clean lines"
+
+[[styles.items]]
+name = "watercolor"
+aliases = "水彩"
+prompt = "watercolor painting style, soft colors, artistic"
+```
+
+### 模型配置（数组结构，可在 WebUI 增删）
+
+```toml
+[[models.items]]
+id = "model1"                                    # 唯一标识（命令引用，不可重复）
+name = "我的模型"                                 # 显示名称
+base_url = "https://api.siliconflow.cn/v1"       # API 地址
+api_key = "Bearer sk-xxx"                        # API 密钥（统一 'Bearer xxx' 格式）
+format = "openai"                                # API 格式，见上方"支持的 API 格式"表
+model = "Kwai-Kolors/Kolors"                     # 模型标识
+fixed_size_enabled = false                       # 固定尺寸（关闭=LLM 自动选）
+default_size = "1024x1024"                       # 默认尺寸
+seed = -1                                        # 随机种子（-1=随机）
+guidance_scale = 2.5                             # 引导强度（CFG）
+num_inference_steps = 20                         # 推理步数
+watermark = false                                # 是否加水印（豆包等支持）
+custom_prompt_add = ", best quality"             # 追加正面提示词
+negative_prompt_add = "lowres, bad anatomy"      # 追加负面提示词
+support_img2img = true                           # 是否支持图生图（按平台文档自行判断）
+auto_recall_delay = 0                            # 自动撤回延时（秒），0=不撤回
+
+# 砂糖云（shatangyun）专用：
+# artist = ""
+# cfg = 0.0                       # CFG Rescale (0.0-1.0)
+# sampler = "k_euler_ancestral"
+# nocache = 0
+# noise_schedule = "karras"
+
+# DashScope（阿里百炼）专用：
+# endpoint_path = ""              # 留空走多模态默认；万相 2.5 i2i / 可灵需指定
+# dashscope_async = false         # 异步模式
+# prompt_extend = true            # 智能扩写
+
+# 梦羽 AI 专用：
+# img2img_model_index = 19        # 图生图模型 index，默认 19 (Qwen Image Edit)
+```
+
+新增模型：复制整个 `[[models.items]]` 块，把 `id` 改成 `model2` / `model3` 等。
 
 ### ComfyUI 支持
 
@@ -162,7 +226,8 @@ auto_recall_delay = 0                      # 自动撤回延时（秒），0=不
 
 **基本配置：**
 ```toml
-[models.model6]
+[[models.items]]
+id = "model6"
 name = "ComfyUI-本地"
 base_url = "http://127.0.0.1:8188"  # ComfyUI 服务地址
 api_key = ""                         # 不需要，留空
@@ -173,7 +238,7 @@ default_size = "1024x1024"           # 通过 ${width}/${height} 传入工作流
 seed = -1                            # -1=每次随机，通过 ${seed} 传入
 guidance_scale = 8                   # 通过 ${cfg} 传入
 num_inference_steps = 30             # 通过 ${steps} 传入
-custom_prompt_add = ", masterpiece"  # 拼接到用户提示词末尾，一起通过 ${prompt} 传入
+custom_prompt_add = ", masterpiece"  # 拼接到用户提示词末尾，通过 ${prompt} 传入
 negative_prompt_add = "lowres"       # 通过 ${negative_prompt} 传入
 support_img2img = false              # 需工作流中包含 ${image} 占位符
 ```
@@ -237,50 +302,6 @@ support_img2img = false              # 需工作流中包含 ${image} 占位符
 ```
 
 > 不使用的占位符可以不写，对应字段会保持工作流中的原始值，完全向后兼容。
-
-### 功能配置
-
-```toml
-[selfie]
-enabled = true
-reference_image_path = ""         # 参考图路径（留空=纯文生图，配置后自动图生图）
-prompt_prefix = "blue hair, red eyes, 1girl"  # Bot 外观描述
-negative_prompt = ""              # 额外负面提示词（自动附加手部质量负面提示词）
-schedule_enabled = true           # 日程增强（结合 autonomous_planning 日程数据），可通过 /dr selfie on|off 按聊天流覆盖
-default_style = "standard"        # 默认自拍风格: standard(前置自拍) / mirror(对镜自拍) / photo(第三人称照片)，可通过 /dr selfie standard|mirror|photo 按聊天流覆盖
-
-[auto_recall]
-enabled = false                   # 总开关，需在模型配置中设置 auto_recall_delay > 0
-
-[prompt_optimizer]
-enabled = true                    # 使用 MaiBot LLM 优化提示词
-```
-
-### 自动自拍配置
-
-```toml
-[auto_selfie]
-enabled = false
-interval_minutes = 120            # 自拍间隔（分钟）
-selfie_model = "model1"           # 使用的模型 ID
-quiet_hours_start = "00:00"       # 安静时段（此时段内不发自拍）
-quiet_hours_end = "07:00"
-caption_enabled = true            # 是否生成配文
-```
-
-> 自动自拍的风格由 `[selfie].default_style` 统一控制。
-
-### 风格配置
-
-```toml
-[styles]
-cartoon = "cartoon style, anime style, colorful, vibrant colors, clean lines"
-watercolor = "watercolor painting style, soft colors, artistic"
-
-[style_aliases]
-cartoon = "卡通,动漫"
-watercolor = "水彩"
-```
 
 ## 💡 使用示例
 

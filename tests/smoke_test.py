@@ -277,6 +277,95 @@ def test_imports():
         return False
 
 
+def _load_plugin_module():
+    """以绝对包路径加载 plugin.py，绕过其内部的 `from .core ...` 相对 import"""
+    parent_dir = plugin_dir.parent
+    package_name = plugin_dir.name
+    sys.path.insert(0, str(parent_dir))
+    return __import__(f"{package_name}.plugin", fromlist=["MaisArtPlugin"])
+
+
+def test_command_pattern():
+    """测试 /dr 命令 pattern：附图/表情/引用图前缀放行 + 反误触发"""
+    print("\n测试 6: /dr 命令 pattern...")
+    try:
+        import re
+        MaisArtPlugin = _load_plugin_module().MaisArtPlugin
+
+        info = getattr(MaisArtPlugin.handle_dr, "__maibot_component_info__", None)
+        pattern = getattr(info, "command_pattern", "") if info else ""
+        if not pattern:
+            print("  ❌ 取不到 handle_dr 的 command_pattern")
+            return False
+        compiled = re.compile(pattern)
+
+        # (text, expect_hit, label)
+        cases = [
+            ("/dr 画一只猫", True, "普通命令"),
+            ("/dr", True, "裸命令"),
+            (" /dr 改背景", True, "前导空白（图片描述未生成）"),
+            ("[image] /dr 改背景", True, "附图未识别完"),
+            ("[图片：一只小猫] /dr 改背景", True, "附图识别完"),
+            ("[emoji] /dr 改", True, "附表情未识别完"),
+            ("[表情包: 笑] /dr 改", True, "附表情识别完"),
+            ("[回复了xxx的消息: [image]] /dr 改背景", True, "引用图片消息"),
+            ("[回复了xxx的消息: [图片：yyy]] /dr 改", True, "引用图片消息（识别完）"),
+            ("tuga，说：/dr 画图", True, "xxx，说：模式"),
+            ("[回复了xxx的消息: 你好] /dr 改", False, "引用纯文本（应不中）"),
+            ("[回复了一条消息，但原消息已无法访问] /dr 改", False, "引用消息无法访问（应不中）"),
+            ("欢迎使用 nbot，发送 /dr 帮助 查看更多", False, "别的 bot 帮助文本（应不中）"),
+            ("[回复了别人的消息: /dr xxx] 哈哈", False, "被引用的命令文本（应不中）"),
+        ]
+
+        failed = []
+        for text, expect_hit, label in cases:
+            actual_hit = compiled.search(text) is not None
+            if actual_hit == expect_hit:
+                print(f"  ✅ {label}")
+            else:
+                expected = "hit" if expect_hit else "miss"
+                got = "hit" if actual_hit else "miss"
+                print(f"  ❌ {label}: 期望 {expected}, 实际 {got} (text={text!r})")
+                failed.append(label)
+
+        return not failed
+    except Exception as e:
+        print(f"  ❌ 命令 pattern 测试失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def test_tool_schema_and_request_defaults():
+    """测试 Tool schema 的 msg_id 必填，以及 GenerationRequest 默认 source='tool'"""
+    print("\n测试 7: Tool schema / GenerationRequest 默认值...")
+    try:
+        MaisArtPlugin = _load_plugin_module().MaisArtPlugin
+        from core.pipeline.request import GenerationRequest
+
+        params = MaisArtPlugin._DRAW_TOOL_PARAMETERS
+        if "msg_id" not in params:
+            print("  ❌ _DRAW_TOOL_PARAMETERS 缺少 msg_id 字段")
+            return False
+        if not params["msg_id"].get("required"):
+            print("  ❌ msg_id 应为 required=True")
+            return False
+        print("  ✅ Tool schema 含 msg_id 且 required=True")
+
+        req = GenerationRequest(description="x")
+        if req.source != "tool":
+            print(f"  ❌ GenerationRequest 默认 source 应为 'tool'，实际 {req.source!r}")
+            return False
+        print(f"  ✅ GenerationRequest 默认 source = {req.source!r}")
+
+        return True
+    except Exception as e:
+        print(f"  ❌ Tool schema / 默认值测试失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
 def main():
     print("=" * 60)
     print("mais_art_journal 插件冒烟测试")
@@ -290,6 +379,8 @@ def main():
     results.append(("风格注册表", test_style_registry()))
     results.append(("自拍提示词构建器", test_selfie_prompt_builder()))
     results.append(("关键模块导入", test_imports()))
+    results.append(("命令 pattern", test_command_pattern()))
+    results.append(("Tool schema / 默认值", test_tool_schema_and_request_defaults()))
 
     # 输出总结
     print("\n" + "=" * 60)

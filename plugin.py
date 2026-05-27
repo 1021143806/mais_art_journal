@@ -66,6 +66,16 @@ class MaisArtPlugin(MaiBotPlugin):
             "description": "图片描述文本（中文或英文均可），例如用户说'画一只小猫'则填写'一只小猫'。必填。",
             "required": True,
         },
+        "msg_id": {
+            "type": "string",
+            "description": (
+                "触发本次工具调用的那条用户消息 ID——也就是聊天记录里最近一条要求你画图的 user 消息的 msg_id（"
+                "你在历史消息每条 <message msg_id=\"...\"> 前缀里能看到）。"
+                "用于支持图生图：若用户在那条消息里直接附图或引用了一张图片，插件会自动取图。"
+                "**必填**，缺失时无法进行图生图，仅能文生图。"
+            ),
+            "required": True,
+        },
         "model_id": {
             "type": "string",
             "description": "可选：要使用的模型 ID（如 model1、model2 等）。不填则使用 default_model 配置。",
@@ -192,9 +202,9 @@ class MaisArtPlugin(MaiBotPlugin):
             logger.error("Action pipeline 尚未初始化")
             return False, "插件未就绪"
 
-        from .core.pipeline import build_request_from_action_kwargs, make_pipeline_context
+        from .core.pipeline import build_request_from_tool_kwargs, make_pipeline_context
 
-        req = await build_request_from_action_kwargs(self, kwargs)
+        req = await build_request_from_tool_kwargs(self, kwargs)
         if req is None:
             return False, "已跳过"
 
@@ -376,7 +386,7 @@ class MaisArtPlugin(MaiBotPlugin):
     @Command(
         "dr",
         description="麦麦绘卷命令套件（生图 / 模型管理 / 风格管理 / 自拍开关）。命令前缀可在「基础配置.命令前缀」修改后重启 MaiBot 生效",
-        pattern=r"^(?:.*，说：\s*)?/dr(?:\s+(?P<rest>.+))?$",
+        pattern=r"^\s*(?:\[(?=[^\]]*(?:图片|image|表情|emoji))(?:[^\[\]]|\[[^\]]*\])*\]\s*)*(?:.*，说：\s*)?/dr(?:\s+(?P<rest>.+))?$",
     )
     async def handle_dr(self, **kwargs: Any):
         """命令入口：实际 pattern 由 get_components() 按 config.basic.command_prefix 动态注入
@@ -437,10 +447,16 @@ class MaisArtPlugin(MaiBotPlugin):
         if not prefix.startswith("/"):
             prefix = "/" + prefix
         escaped = re.escape(prefix)
-        # 必须 ^ 锚定起始：MaiBot host 用的是 re.search 而不是 re.match，
-        # 没有 ^ 锚的话，任何文本末尾长得像 "<prefix> xxx" 的消息（包括别的 bot 的
-        # 帮助文本）都会被吃中。
-        new_pattern = rf"^(?:.*，说：\s*)?{escaped}(?:\s+(?P<rest>.+))?$"
+        # ^ 锚反"别的 bot 帮助文本"误触；放行前导空白和"含图片/表情"的方括号占位段
+        # （覆盖附图/附 emoji/引用 这几种 processed_plain_text 形态）。
+        bracket_media = (
+            r"\[(?=[^\]]*(?:图片|image|表情|emoji))"
+            r"(?:[^\[\]]|\[[^\]]*\])*\]"
+        )
+        new_pattern = (
+            rf"^\s*(?:{bracket_media}\s*)*"
+            rf"(?:.*，说：\s*)?{escaped}(?:\s+(?P<rest>.+))?$"
+        )
 
         for comp in components:
             if (
