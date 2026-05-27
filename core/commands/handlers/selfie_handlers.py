@@ -36,7 +36,8 @@ async def cmd_selfie(plugin: "MaisArtPlugin", dctx: "DispatcherContext", args: s
         return True, f"自拍风格切换为{action}", True
 
     await plugin.ctx.send.text(
-        "格式：/dr selfie on|off（日程增强）或 /dr selfie standard|mirror|photo（自拍风格）",
+        f"格式：{dctx.prefix} selfie on|off（日程增强）或 "
+        f"{dctx.prefix} selfie standard|mirror|photo（自拍风格）",
         dctx.stream_id,
     )
     return False, "参数无效", True

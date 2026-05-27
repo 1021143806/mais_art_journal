@@ -36,6 +36,7 @@ class DispatcherContext:
     message: Any
     is_admin: bool
     log_prefix: str
+    prefix: str = "/dr"
     user_id: str = ""
     group_id: str = ""
     user_nickname: str = ""
@@ -69,6 +70,7 @@ class CommandDispatcher:
             message=message,
             is_admin=self._is_admin(user_id),
             log_prefix=self._log_prefix(group_name, user_nickname),
+            prefix=self._resolved_prefix(),
             user_id=user_id,
             group_id=group_id,
             user_nickname=user_nickname,
@@ -106,6 +108,16 @@ class CommandDispatcher:
 
     # ==================== 上下文辅助 ====================
 
+    def _resolved_prefix(self) -> str:
+        """读取 basic.command_prefix，统一带 / 形式；读取失败回退到 /dr"""
+        try:
+            prefix = (self.plugin.config.basic.command_prefix or "/dr").strip()
+        except Exception:
+            prefix = "/dr"
+        if not prefix.startswith("/"):
+            prefix = "/" + prefix
+        return prefix
+
     def _is_admin(self, user_id: str) -> bool:
         if not user_id:
             return False
@@ -120,8 +132,4 @@ class CommandDispatcher:
             return f"[{group_name}]"
         if user_nickname:
             return f"[{user_nickname} 的 私聊]"
-        try:
-            prefix = (self.plugin.config.basic.command_prefix or "/dr").strip()
-            return f"[MaisArt {prefix}]"
-        except Exception:
-            return "[MaisArt]"
+        return f"[MaisArt {self._resolved_prefix()}]"

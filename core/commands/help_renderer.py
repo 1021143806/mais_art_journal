@@ -14,17 +14,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger("plugin.mais_art_journal.help")
 
 
-def _resolved_prefix(dctx: "DispatcherContext") -> str:
-    """读取当前命令前缀（统一带 / 形式）"""
-    prefix = (dctx.plugin.config.basic.command_prefix or "/dr").strip()
-    if not prefix.startswith("/"):
-        prefix = "/" + prefix
-    return prefix
-
-
 async def render_help(dctx: "DispatcherContext") -> CommandResult:
     """渲染 help / 空调用的帮助文案（前缀跟随 basic.command_prefix）"""
-    prefix = _resolved_prefix(dctx)
+    prefix = dctx.prefix
     lines = [
         "🎨 图片风格系统帮助\n",
         "📋 基本命令：",
@@ -62,7 +54,7 @@ async def render_current_config(dctx: "DispatcherContext") -> CommandResult:
     """config：渲染当前聊天流的配置摘要"""
     plugin = dctx.plugin
     chat_id = dctx.chat_id
-    prefix = _resolved_prefix(dctx)
+    prefix = dctx.prefix
 
     global_action_model = plugin.config.basic.default_model
     global_command_model = plugin.config.basic.pic_command_model
