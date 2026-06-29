@@ -33,7 +33,11 @@ class SendImage(BaseStep):
 
         req.send_timestamp = time_module.time()
         try:
-            sent = await ctx.plugin.ctx.send.image(req.resolved_image_data, req.stream_id)
+            sent = await ctx.plugin.ctx.send.image(
+                req.resolved_image_data, req.stream_id,
+                sync_to_maisaka_history=True,
+                maisaka_source_kind="plugin_send_image",
+            )
         except Exception as e:
             logger.error(f"{req.log_prefix} 发送图片异常: {e!r}")
             return StepResult.fail(error=f"发送图片异常: {e!r}", user_message="图片已处理完成，但发送失败了")
@@ -44,7 +48,11 @@ class SendImage(BaseStep):
         mode_text = "图生图" if req.is_img2img else "文生图"
         if req.debug_info and not req.cache_hit and req.source in ("tool", "cmd_style", "cmd_natural"):
             try:
-                await ctx.plugin.ctx.send.text(f"{mode_text}完成！", req.stream_id)
+                await ctx.plugin.ctx.send.text(
+                    f"{mode_text}完成！", req.stream_id,
+                    sync_to_maisaka_history=True,
+                    maisaka_source_kind="plugin_send_text",
+                )
             except Exception as e:
                 logger.warning(f"{req.log_prefix} 发送完成提示失败: {e}")
 

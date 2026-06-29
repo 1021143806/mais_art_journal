@@ -54,7 +54,11 @@ class Pipeline:
             if result.action == "fail":
                 if result.user_message and req.stream_id:
                     try:
-                        await ctx.plugin.ctx.send.text(result.user_message, req.stream_id)
+                        await ctx.plugin.ctx.send.text(
+                            result.user_message, req.stream_id,
+                            sync_to_maisaka_history=True,
+                            maisaka_source_kind="plugin_send_text",
+                        )
                     except Exception as e:
                         logger.warning(f"{req.log_prefix} 发送失败信息失败: {e}")
                 req.success = False
